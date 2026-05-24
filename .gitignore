@@ -1,0 +1,24 @@
+# Rust build artifacts
+target/
+**/*.rs.bk
+
+# Python
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# Simulation outputs
+results/
+
+# LLM prompt cache (prompt → response; pseudo-determinism mechanism)
+.llm_cache/
+
+# Claude Code local settings and notes
+.claude/
+
+# macOS
+.DS_Store

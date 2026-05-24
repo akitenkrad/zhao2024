@@ -1,0 +1,31 @@
+[package]
+name = "competeai-simulation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "competeai_simulation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "competeai"
+path = "src/main.rs"
+
+[dependencies]
+rand        = { version = "0.8", features = ["small_rng"] }
+csv         = "1.3"
+serde       = { version = "1.0", features = ["derive"] }
+serde_json  = "1.0"
+clap        = { version = "4.5", features = ["derive"] }
+chrono      = "0.4"
+
+# social-simulation framework (socsim) — ABM のエンジン基盤．CompeteAI は店舗−顧客が
+# 市場 (二部マッチング) を介して相互作用する非空間モデルなので core + engine に加え，
+# LLM 駆動の意思決定のため LLM ヘルパ層 socsim-llm を取り込む (空間格子なし →
+# socsim-grid 不要; 市場仲介 → socsim-net も既定不要)．socsim-llm の "live" feature が
+# ollama + openai 両バックエンド (FallbackClient) を有効化する (issue #21)．reqwest /
+# sha2 は使わない (socsim-llm が HTTP とプロンプトハッシュを所有する)．具体的 commit は
+# Cargo.lock で固定する (schelling1971 / axelrod1997 / li2024 と同一規約)．
+socsim-core   = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
+socsim-engine = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
+socsim-llm    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-llm", features = ["live"] }
