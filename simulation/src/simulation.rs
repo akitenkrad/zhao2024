@@ -11,11 +11,8 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::BufWriter;
 use std::rc::Rc;
 
-use csv::Writer;
 use rand::Rng;
 use serde::Serialize;
 
@@ -252,14 +249,13 @@ fn compute_quality_improved(metrics: &[DailyMetric]) -> bool {
 }
 
 /// 日次指標を CSV に保存する (long-format; 1 行 = 1 日 1 店舗)．
+///
+/// 書き出し機構は `socsim_results::write_csv` に委譲する (各行を `serialize` し
+/// 先頭行にヘッダを書く csv クレットの標準挙動; 従来の手書き writer とバイト等価)．
+/// 行構造体 [`DailyMetric`] は repo 固有のままで，writer だけを共有化する．
 pub fn save_metrics(metrics: &[DailyMetric], output_dir: &str) {
     let path = format!("{}/metrics.csv", output_dir);
-    let file = File::create(&path).expect("metrics.csv の作成に失敗");
-    let mut wtr = Writer::from_writer(BufWriter::new(file));
-    for m in metrics {
-        wtr.serialize(m).expect("メトリクス書き込みに失敗");
-    }
-    wtr.flush().expect("フラッシュに失敗");
+    socsim_results::write_csv(metrics, &path).expect("metrics.csv の書き込みに失敗");
 }
 
 /// `run_metadata.json` の構造体 (LLM モデル・endpoint・温度・seed・cache 統計)．
@@ -295,15 +291,19 @@ pub fn save_run_metadata(result: &SimulationResult, cfg: &Config, output_dir: &s
                            majority tie-breaking, market matching, revenue/Gini/share metrics) is \
                            deterministic given the seed.",
     };
+    // pretty-print JSON の書き出しは socsim_results::write_json に委譲する
+    // (内部は serde_json::to_writer_pretty + flush; 従来の writer とバイト等価)．
+    // model/endpoint/temperature/seed/WTA/品質改善の値は従来どおり result / cfg
+    // から採り，RunMetadataJson の構造 (フィールド名・順序・determinism_note) を
+    // 保持する (`MetadataCollector::summary()` は cache-hit 100% 再実行や呼び出し
+    // 0 件で endpoint/model が変わりうるため，バイト等価のためここでは使わない)．
     let path = format!("{}/run_metadata.json", output_dir);
-    let file = File::create(&path).expect("run_metadata.json の作成に失敗");
-    serde_json::to_writer_pretty(BufWriter::new(file), &meta)
-        .expect("run_metadata.json の書き込みに失敗");
+    socsim_results::write_json(&meta, &path).expect("run_metadata.json の書き込みに失敗");
 }
 
 /// 出力ディレクトリを作成する．
 pub fn ensure_output_dir(output_dir: &str) {
-    fs::create_dir_all(output_dir).expect("出力ディレクトリの作成に失敗");
+    socsim_results::ensure_dir(output_dir).expect("出力ディレクトリの作成に失敗");
 }
 
 /// 日次指標から最大市場シェアの系列を抽出する (1 日 1 値; ヘルパ)．

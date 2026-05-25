@@ -30,10 +30,9 @@
 //! 対する [`LlmClient`] の転送実装を提供する (issue #26) ため，専用 newtype は
 //! 不要である．
 
-use socsim_llm::{
-    CachingClient, FallbackClient, LlmClient, LlmConfig, LlmError, OllamaClient, OpenAiClient,
-    PromptCache,
-};
+use std::path::Path;
+
+use socsim_llm::{CachingClient, LlmClient, LlmConfig, LlmError, PromptCache};
 
 use crate::config::LlmSettings;
 
@@ -57,26 +56,16 @@ pub type CompeteClient = CachingClient<Box<dyn LlmClient>>;
 ///   in-memory．
 pub fn build_live_client(settings: &LlmSettings) -> Result<CompeteClient, LlmError> {
     // 既定モデルを llama3.2:latest にする (OLLAMA_MODEL 未設定時)．socsim-llm の
-    // OllamaClient::from_env 既定は llama3.1 のため，明示的に上書きする．
+    // OllamaClient::from_env 既定は llama3.1 のため，委譲前に明示的に上書きする
+    // (run_metadata に記録される model を従来どおり保つため)．
     if std::env::var("OLLAMA_MODEL").is_err() {
         std::env::set_var("OLLAMA_MODEL", "llama3.2:latest");
     }
-    let ollama = OllamaClient::from_env();
-    // OPENAI_API_KEY が無い環境でも Ollama 単独で動かせるよう，from_env が失敗
-    // した場合は空キーのプレースホルダを置く (Ollama 失敗時のみ Config エラー)．
-    let openai = OpenAiClient::from_env().unwrap_or_else(|_| {
-        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into());
-        OpenAiClient::new("", model)
-    });
-
-    let fallback = FallbackClient::new(ollama, openai);
-    let backend: Box<dyn LlmClient> = Box::new(fallback);
-
-    let cache = match &settings.cache_path {
-        Some(path) => PromptCache::open(path)?,
-        None => PromptCache::in_memory(),
-    };
-    Ok(CachingClient::new(backend, cache))
+    // «Ollama 第一 → OpenAI フォールバック → 型消去 → キャッシュ» の組み立ては
+    // socsim-llm の `build_live_client` に委譲する (挙動は従来の手書き実装と等価)．
+    // 本ラッパは replication 固有の `LlmSettings` (cache_path) と上記 OLLAMA_MODEL
+    // 既定だけを受け持つ薄い層である．
+    socsim_llm::build_live_client(settings.cache_path.as_deref().map(Path::new))
 }
 
 /// 任意の [`LlmClient`] (例: `mock::ScriptedClient`) をキャッシュで包んだ

@@ -29,3 +29,6 @@ chrono      = "0.4"
 socsim-core   = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-core" }
 socsim-engine = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-engine" }
 socsim-llm    = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-llm", features = ["live"] }
+# 出力ヘルパ (timestamp / run-dir / latest symlink / CSV・JSON writer)．
+# ライブラリモードのボイラープレートを集約した共有クレット．
+socsim-results = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", branch = "main", package = "socsim-results" }

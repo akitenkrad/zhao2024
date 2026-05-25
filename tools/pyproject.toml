@@ -7,10 +7,14 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "pandas>=2.2",
+    "socsim-tools",
 ]
 
 [project.scripts]
 competeai-tools = "competeai_tools.cli:main"
+
+[tool.uv.sources]
+socsim-tools = { git = "https://github.com/akitenkrad/rs-social-simulation-tools", subdirectory = "tools/socsim_tools" }
 
 [build-system]
 requires = ["hatchling"]

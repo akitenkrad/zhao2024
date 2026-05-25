@@ -10,29 +10,42 @@ Usage:
     competeai-tools show-experiment-settings
     competeai-tools show-experiment-settings --results-dir results/20260524_153000
     competeai-tools show-experiment-settings --results-dir results/latest --json
+
+I/O・run 設定テーブルは共有ヘルパ `socsim_tools` に委譲する (出力はバイト等価)．
+sweep 設定テーブル・`--json` の `kind` フィールド・run_metadata ブロック
+(competeai 固有の勝者総取り/品質改善行を含む) は本モジュールに残す．
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
+from socsim_tools.io import load_run_metadata, resolve_results_dir
+from socsim_tools.settings import render_run_config
 
-def _resolve_results_dir(arg: str) -> Path:
-    """ユーザ指定の results_dir を絶対パスに解決する (symlink も実体へ)．"""
-    p = Path(arg)
-    if not p.is_absolute():
-        candidates = [Path.cwd() / arg, p]
-        for c in candidates:
-            if c.exists():
-                p = c
-                break
-        else:
-            p = candidates[0]
-    return Path(os.path.realpath(p))
+# config キー → 表示ラベル (右コロン位置を揃えるため空白パディング済み)．
+# render_run_config が `f"{label}: {value}"` で整形するため，ラベルは末尾の
+# `: ` を含めず，従来の run レンダラと同じ桁揃えになるようパディングする．
+FIELD_LABELS = {
+    "n_firms": "店舗数 M         ",
+    "n_customers": "顧客数 N         ",
+    "customer_mode": "顧客構成         ",
+    "group_size": "グループ人数     ",
+    "days": "日数 days        ",
+    "init_funds": "初期資金         ",
+    "init_menu_size": "初期メニュー数   ",
+    "init_price": "初期価格         ",
+    "init_cost_ratio": "初期原価率       ",
+    "init_chef_salary": "初期シェフ給与   ",
+    "customer_income": "顧客所得         ",
+    "seed": "シード (コア)    ",
+    "llm_temperature": "LLM 温度         ",
+    "llm_seed": "LLM seed         ",
+    "output_dir": "出力先           ",
+}
 
 
 def _find_config_file(results_dir: Path) -> tuple[Path, str]:
@@ -49,41 +62,8 @@ def _find_config_file(results_dir: Path) -> tuple[Path, str]:
     )
 
 
-def _load_run_metadata(results_dir: Path) -> dict | None:
-    path = results_dir / "run_metadata.json"
-    if path.exists():
-        with path.open() as f:
-            return json.load(f)
-    return None
-
-
-def render_run_config(cfg: dict, source: Path) -> str:
-    lines: list[str] = []
-    lines.append("=" * 70)
-    lines.append("実行設定 (run)")
-    lines.append("=" * 70)
-    lines.append(f"設定ファイル: {source}")
-    lines.append("-" * 70)
-    lines.append(f"店舗数 M         : {cfg.get('n_firms', '-')}")
-    lines.append(f"顧客数 N         : {cfg.get('n_customers', '-')}")
-    lines.append(f"顧客構成         : {cfg.get('customer_mode', '-')}")
-    lines.append(f"グループ人数     : {cfg.get('group_size', '-')}")
-    lines.append(f"日数 days        : {cfg.get('days', '-')}")
-    lines.append(f"初期資金         : {cfg.get('init_funds', '-')}")
-    lines.append(f"初期メニュー数   : {cfg.get('init_menu_size', '-')}")
-    lines.append(f"初期価格         : {cfg.get('init_price', '-')}")
-    lines.append(f"初期原価率       : {cfg.get('init_cost_ratio', '-')}")
-    lines.append(f"初期シェフ給与   : {cfg.get('init_chef_salary', '-')}")
-    lines.append(f"顧客所得         : {cfg.get('customer_income', '-')}")
-    lines.append(f"シード (コア)    : {cfg.get('seed', '-')}")
-    lines.append(f"LLM 温度         : {cfg.get('llm_temperature', '-')}")
-    lines.append(f"LLM seed         : {cfg.get('llm_seed', '-')}")
-    lines.append(f"出力先           : {cfg.get('output_dir', '-')}")
-    lines.append("=" * 70)
-    return "\n".join(lines)
-
-
 def render_sweep_config(cfg: dict, source: Path) -> str:
+    """sweep 設定テーブルを整形する (competeai 固有; リスト項目を `, ` 連結する)．"""
     lines: list[str] = []
     lines.append("=" * 70)
     lines.append("実行設定 (sweep)")
@@ -103,6 +83,12 @@ def render_sweep_config(cfg: dict, source: Path) -> str:
 
 
 def render_run_metadata(meta: dict) -> str:
+    """LLM 実行メタデータブロックを整形する．
+
+    competeai は勝者総取り・品質改善の 2 行を含むため共有ヘルパ
+    `socsim_tools.settings.render_run_metadata` ではなく本ローカル実装を使う
+    (従来出力とバイト等価)．
+    """
     lines: list[str] = []
     lines.append("")
     lines.append("LLM 実行メタデータ (run_metadata.json)")
@@ -145,22 +131,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    results_dir = _resolve_results_dir(args.results_dir)
+    results_dir = resolve_results_dir(args.results_dir)
     if not results_dir.exists():
         print(f"エラー: ディレクトリが存在しません: {results_dir}", file=sys.stderr)
         return 1
 
-    cfg_path, kind = _find_config_file(results_dir)
+    try:
+        cfg_path, kind = _find_config_file(results_dir)
+    except FileNotFoundError as exc:
+        print(f"エラー: {exc}", file=sys.stderr)
+        return 1
     with cfg_path.open() as f:
         cfg = json.load(f)
-    meta = _load_run_metadata(results_dir)
+    meta = load_run_metadata(results_dir)
 
     if args.json:
         payload = {"source": str(cfg_path), "kind": kind, "config": cfg, "run_metadata": meta}
         print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         if kind == "run":
-            print(render_run_config(cfg, cfg_path))
+            print(render_run_config(cfg, cfg_path, FIELD_LABELS))
         else:
             print(render_sweep_config(cfg, cfg_path))
         if meta is not None:
