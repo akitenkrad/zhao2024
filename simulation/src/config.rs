@@ -51,28 +51,9 @@ pub fn parse_customer_mode(s: &str) -> Result<CustomerMode, String> {
 
 /// LLM レイヤの設定 (provider / model / temperature / seed / cache)．
 ///
-/// プロバイダ優先順位は «Ollama 第一 → OpenAI フォールバック» 固定．モデル・
-/// ホスト・API キーは環境変数で渡す (`OLLAMA_HOST` / `OLLAMA_MODEL` /
-/// `OPENAI_API_KEY` / `OPENAI_MODEL`)．`temperature`/`seed` で擬似決定論化する．
-#[derive(Debug, Clone)]
-pub struct LlmSettings {
-    /// 生成温度 (既定 0.0; 再現性のため．論文は GPT-4 既定温度近傍)．
-    pub temperature: f32,
-    /// 生成シード (バックエンドへ渡す; Ollama は honour，OpenAI は best-effort)．
-    pub seed: u64,
-    /// プロンプト→応答キャッシュの保存先 (None なら in-memory)．
-    pub cache_path: Option<String>,
-}
-
-impl Default for LlmSettings {
-    fn default() -> Self {
-        LlmSettings {
-            temperature: 0.0,
-            seed: 0,
-            cache_path: None,
-        }
-    }
-}
+/// 定義は `socsim-llm` に集約済み (各 replication で同一だった struct を統合)．
+/// `crate::config::LlmSettings` パスは re-export で温存する．
+pub use socsim_llm::LlmSettings;
 
 // --------------------------------------------------------------------------- //
 // Config
