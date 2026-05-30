@@ -11,7 +11,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．したがって
 - **決定論的 socsim コア** — 店舗/顧客の初期化 (資金・所得・嗜好)・活性化順・グループ多数決の同点処理・顧客−店舗の市場マッチング・財務会計 (収益・原価・資金)・全指標 (収益 Gini・市場シェア集中・勝者総取り・料理スコア・メニュー類似度)．seed が決まれば bit 単位で再現する (`ctx.rng`, ChaCha20 `SimRng`)．
 - **非決定的 LLM レイヤ** — 2 つの `Decision` メカニズム: 店舗戦略の反省 (`CompetitionMatthewMechanism`) と顧客選択 (`CustomerChoiceMechanism`)．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・固定 seed で擬似決定論化する．プロバイダ順序は `socsim-llm` の `FallbackClient` による **Ollama 第一 → OpenAI フォールバック**．
 
-再現性の本体はモデルではなく **キャッシュ** である: ウォームキャッシュは同一応答を再生するので，再実行は無料かつ安定する．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-4` と異なるため，再現目標は **定性的** とする: マタイ効果 / 市場集中の傾向，勝者総取りの発生，品質改善の発生であり，論文の厳密な発生頻度 (勝者総取り 個人 66.7% / グループ 16.7%，品質改善 86.67%，メニュー類似度 約36%) の一致は求めない．
+再現性の本体はモデルではなく **キャッシュ** である: ウォームキャッシュは同一応答を再生するので，再実行は無料かつ安定する．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-4` と異なるため，再現目標は **定性的** とする: マタイ効果 / 市場集中の傾向，勝者総取りの発生，品質改善の発生であり，論文の厳密な発生頻度 (勝者総取り 個人 66.7% / グループ 16.7%，品質改善 86.67%，メニュー類似度 約36%) の一致は求めない．`reproduce` サブコマンドが個人客・グループ客の試行を一括実行し，観測された発生頻度を論文 Table 2 と方向性のある合否バンドで突き合わせる ([CLI](docs/cli.ja.md) を参照)．
 
 > 本プロジェクトは LLM レイヤを `socsim-llm` クレットに標準化しており，`reqwest` / `sha2` は使わない (HTTP とプロンプトキャッシュのハッシュは socsim-llm が所有する)．空間格子・網モデル (`socsim-grid` / `socsim-net`) は不要で，相互作用は市場媒介であるため `socsim-core` + `socsim-engine` + `socsim-llm` のみに依存する．
 
@@ -46,7 +46,7 @@ uv run competeai-tools show-experiment-settings --results-dir results/latest
 
 ### オフライン (LLM 不要) スモーク
 
-日次ループ・出力ライタ・Python 可視化は，スクリプト化した mock クライアントでライブ LLM なしに検証できる:
+日次ループ・出力ライタ・Python 可視化は，スクリプト化した mock クライアントでライブ LLM なしに検証できる．`run` / `reproduce` / `mock_smoke` 例はいずれもオフライン経路 (`--mock` または専用の example) を備え，サンドボックス・CI はこれでパイプライン全体を決定論的に駆動する:
 
 ```bash
 cargo run --release --example mock_smoke -- results
@@ -63,14 +63,34 @@ cargo run --release -- sweep \
 uv run competeai-tools visualize-sweep
 ```
 
-## スコープ
+### 論文 Table 2 の発生頻度を再現する
 
-本リポジトリは現在 **Phase 1** (`MarketWorld` + 6-phase ループ上の 5 メカニズム，Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層，`run` サブコマンド，マタイ効果指標) と **Phase 2** (店舗数 × 顧客数 の `sweep`，Python `visualize` / `visualize-sweep` / `show-experiment-settings`) を実装している．論文 Table 2 の発生頻度一括再現 (`reproduce`) とグループ客の深掘り分析は将来作業 (Phase 3) とし，グループ客比較用の `customer-mode group` スタブを含む拡張点を随所に残している．
+`reproduce` は個人客と グループ客の試行を一括実行し，観測された発生頻度 (勝者総取り・品質改善・メニュー類似度) を論文 Table 2 と合否バンドで突き合わせ，`reproduce_summary.json` と条件別メトリクスを書き出す．付随する Python ツールが発生頻度・マタイ効果・シェア推移の図を描く．
+
+```bash
+# オフライン (scripted mock) 一括再現 + 図
+uv run competeai-tools reproduce --run --mock
+# ライブ LLM の場合 (ビルドして Ollama 起動後):
+#   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
+```
+
+## できること
+
+本プロジェクトは CompeteAI 仮想タウンモデルとその分析を端から端まで実装する:
+
+- **`run`** — LLM 駆動 市場競争 ABM (`MarketWorld` + 6-phase ループ上の 5 メカニズム，Ollama→OpenAI フォールバック + キャッシュの LLM 意思決定層，マタイ効果指標) を 1 設定で実行する．`--customer-mode {individual,group}` で審判を独立した個人とするか熟議するグループとするかを選び，`--mock` でオフライン駆動する．
+- **`sweep`** — 店舗数 × 顧客数 のパラメータスイープ．条件別にマタイ効果指標を集計する．
+- **`reproduce`** — 論文 Table 2 の発生頻度を一括再現する．個人客・グループ客条件を比較し，観測された勝者総取り / 品質改善 / メニュー類似度の発生頻度を論文と突き合わせる．
+- **Python `competeai-tools`** — 結果の作図・確認のための `visualize` / `visualize-sweep` / `show-experiment-settings` / `reproduce`．
+
+### 顧客構成の比較 (個人 vs グループ)
+
+審判は独立した個人としても，**熟議するグループ**としても振る舞える．個人客は社会的証明に流されやすく人気店へ同調するため，初期優位が正のフィードバックで増幅し勝者総取り (マタイ効果) に至る．一方グループは熟議し，メンバーが流行に従わず各自の予算・好みを表明して，その内部の多様性に応じてメンバーを各店へ配分する．これが正のフィードバックループを攪乱し勝者総取りを緩和する — 本モデルは論文の 個人 → グループ の緩和 (Table 2: 66.7% → 16.7%) を再現する．モードは `run` / `sweep` / `reproduce` の `--customer-mode {individual,group}` で選ぶ．
 
 ## ドキュメント
 
 - [ユースケース](docs/usecases.ja.md) — 本プロジェクトでできることと各ドキュメントへの導線．
-- [CLI](docs/cli.ja.md) — Rust CLI: `run` / `sweep` サブコマンドとフラグ，LLM 環境変数．
+- [CLI](docs/cli.ja.md) — Rust CLI: `run` / `sweep` / `reproduce` サブコマンドとフラグ，LLM 環境変数．
 - [可視化](docs/visualization.ja.md) — Python `competeai-tools` と出力の解釈．
 - [アーキテクチャ](docs/architecture.ja.md) — リポジトリ構成・二層決定論・socsim/`socsim-llm`・メカニズム・指標・参考文献．
 

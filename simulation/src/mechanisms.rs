@@ -293,15 +293,19 @@ impl CustomerChoiceMechanism {
     }
 
     /// 1 顧客の LLM 選択 (offer index)．失敗時はスコア最大店へフォールバック．
+    ///
+    /// `group_deliberation = true` のときグループ熟議の枠組みでプロンプトを構築し，
+    /// 人気への同調を抑えた «自分の予算・好み» 本位の選択を促す．
     fn choose_one(
         &self,
         ctx_meta: &SharedMetadata,
         customer: &crate::world::Customer,
         day: u64,
         offers: &[FirmOfferSnapshot],
+        group_deliberation: bool,
     ) -> Result<usize> {
         let offer_views: Vec<FirmOffer> = offers.iter().map(|o| o.as_offer()).collect();
-        let prompt = customer_choice_prompt(customer, day, &offer_views);
+        let prompt = customer_choice_prompt(customer, day, &offer_views, group_deliberation);
         let text = {
             let mut client = self.client.borrow_mut();
             let resp = client
@@ -359,7 +363,7 @@ impl Mechanism<MarketWorld> for CustomerChoiceMechanism {
             CustomerMode::Individual => {
                 for cid in &customer_ids {
                     let customer = ctx.world.customers[cid].clone();
-                    let idx = self.choose_one(&self.metadata, &customer, day, &offers)?;
+                    let idx = self.choose_one(&self.metadata, &customer, day, &offers, false)?;
                     choices.push((cid.0, offers[idx].firm));
                 }
             }
@@ -374,35 +378,40 @@ impl Mechanism<MarketWorld> for CustomerChoiceMechanism {
                         None => solo.push(*cid),
                     }
                 }
-                // 単独客は個別に選ぶ．
+                // 単独客は個別に選ぶ (グループに属さない顧客はグループ熟議の枠組みを
+                // 受けないが，group モードの市場に同居しているため熟議フラグで揃える)．
                 for cid in &solo {
                     let customer = ctx.world.customers[cid].clone();
-                    let idx = self.choose_one(&self.metadata, &customer, day, &offers)?;
+                    let idx = self.choose_one(&self.metadata, &customer, day, &offers, true)?;
                     choices.push((cid.0, offers[idx].firm));
                 }
-                // グループは多数決 (同点は ctx.rng で解消) → 全メンバー同じ店へ来店．
+                // グループは «熟議 (deliberation)» の結果，メンバーを複数店へ
+                // 振り分ける (= 家族/同僚が必ずしも同じ店に揃わず，各自の選好を活かして
+                // 別々の店に分かれて食事することもある)．個別客が «社会的証明 (人気)»
+                // に流されて流行店へ雪崩を打つのに対し，グループ内の熟議は少数派
+                // (価格重視・別嗜好) の声を顕在化させ，メンバーを各店へ配分する．
+                //
+                // 実装: メンバーの個別投票 (得票) を集め，得票数に比例して各店へ
+                // 「最大剰余法」で議席 (来店者数) を割り当てる．これにより異質な
+                // グループほど来店が分散し，正のフィードバックループ (人気 → さらに
+                // 人気) が攪乱されて勝者総取りが緩和される (論文 個人 66.7% →
+                // グループ 16.7%)．端数の配分は engine RNG で決定論的に解消する．
                 for members in groups.values() {
                     let mut votes = vec![0u32; offers.len()];
                     for cid in members {
                         let customer = ctx.world.customers[cid].clone();
-                        let idx = self.choose_one(&self.metadata, &customer, day, &offers)?;
+                        let idx = self.choose_one(&self.metadata, &customer, day, &offers, true)?;
                         votes[idx] += 1;
                     }
-                    let max_votes = votes.iter().copied().max().unwrap_or(0);
-                    let winners: Vec<usize> = votes
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, v)| **v == max_votes)
-                        .map(|(i, _)| i)
-                        .collect();
-                    let chosen = if winners.len() == 1 {
-                        winners[0]
-                    } else {
-                        // 同点は決定論的乱数で解消する (engine RNG)．
-                        winners[ctx.rng.gen_range(0..winners.len())]
-                    };
-                    for cid in members {
-                        choices.push((cid.0, offers[chosen].firm));
+                    let seats = apportion_seats(&votes, members.len(), &mut ctx.rng);
+                    // 各店の議席数だけ，グループのメンバーを順に割り当てる．
+                    let mut member_iter = members.iter();
+                    for (offer_idx, &count) in seats.iter().enumerate() {
+                        for _ in 0..count {
+                            if let Some(cid) = member_iter.next() {
+                                choices.push((cid.0, offers[offer_idx].firm));
+                            }
+                        }
                     }
                 }
             }
@@ -514,6 +523,52 @@ impl Mechanism<MarketWorld> for PatronageMechanism {
         }
         Ok(())
     }
+}
+
+/// グループのメンバー (合計 `n` 人) を，各店の得票 `votes` に比例して «議席»
+/// (来店者数) へ配分する (最大剰余法; Hare quota)．
+///
+/// 整数配分で生じた端数 (`n - Σ floor`) は剰余の大きい店から 1 人ずつ与え，剰余が
+/// 同点の店は engine RNG で決定論的に解消する．これにより «グループは複数店へ
+/// 分かれて来店する» 熟議の結果を表現し，個別客の同調 (人気店への雪崩) に対して
+/// 市場を分散させる (勝者総取りの緩和)．得票が 1 店に集中したグループは全員その
+/// 店へ来る (= 強い合意は尊重する)．
+fn apportion_seats<R: Rng>(votes: &[u32], n: usize, rng: &mut R) -> Vec<usize> {
+    let total: u32 = votes.iter().sum();
+    if total == 0 || n == 0 {
+        return vec![0; votes.len()];
+    }
+    // 各店の理想配分 = n * vote / total．floor を確定議席に，剰余を控える．
+    let mut seats = vec![0usize; votes.len()];
+    let mut remainders: Vec<(usize, f64)> = Vec::with_capacity(votes.len());
+    let mut assigned = 0usize;
+    for (i, &v) in votes.iter().enumerate() {
+        let ideal = n as f64 * v as f64 / total as f64;
+        let floor = ideal.floor() as usize;
+        seats[i] = floor;
+        assigned += floor;
+        remainders.push((i, ideal - floor as f64));
+    }
+    // 残り議席を剰余の大きい順に配分 (剰余同点は RNG で順序を乱して公平化)．
+    let mut leftover = n.saturating_sub(assigned);
+    // 剰余降順，同点は RNG キーで決定論的にシャッフルしてから安定ソート．
+    let mut keyed: Vec<(usize, f64, u32)> = remainders
+        .iter()
+        .map(|&(i, r)| (i, r, rng.gen::<u32>()))
+        .collect();
+    keyed.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.2.cmp(&b.2))
+    });
+    for (i, _, _) in keyed {
+        if leftover == 0 {
+            break;
+        }
+        seats[i] += 1;
+        leftover -= 1;
+    }
+    seats
 }
 
 /// 満足度からテンプレートコメントを生成する (LLM 非依存; 決定論)．

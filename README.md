@@ -11,7 +11,7 @@ LLM output is **outside** socsim's bit-reproducibility. The design therefore spl
 - **Deterministic socsim core** — restaurant/customer initialisation (funds, incomes, preferences), activation order, group majority tie-breaking, the customer–firm market matching, the fiscal accounting (revenue, costs, funds) and all metrics (revenue Gini, market-share concentration, winner-take-all, dish scores, menu similarity). Given a seed this reproduces bit-for-bit (`ctx.rng`, ChaCha20 `SimRng`).
 - **Non-deterministic LLM layer** — the two `Decision` mechanisms: the firm strategy reflection (`CompetitionMatthewMechanism`) and the customer choice (`CustomerChoiceMechanism`). Pseudo-determinised by `socsim-llm`'s `CachingClient` (a `hash(prompt+model)` → response cache), `temperature=0` and a fixed seed. The provider order is **Ollama first → OpenAI fallback** via `socsim-llm`'s `FallbackClient`.
 
-The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2`) differs from the paper's `gpt-4`, reproduction targets are **qualitative**: the occurrence of the Matthew effect / market concentration, winner-take-all occurrence, and quality improvement — not the exact paper frequencies (winner-take-all 66.7% individuals / 16.7% groups, quality improvement 86.67%, menu similarity ≈ 36%).
+The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2`) differs from the paper's `gpt-4`, reproduction targets are **qualitative**: the occurrence of the Matthew effect / market concentration, winner-take-all occurrence, and quality improvement — not the exact paper frequencies (winner-take-all 66.7% individuals / 16.7% groups, quality improvement 86.67%, menu similarity ≈ 36%). The `reproduce` subcommand batches the individual-vs-group runs and scores the observed frequencies against the paper's Table 2 with a directional pass/off band (see [CLI](docs/cli.md)).
 
 > This project standardises on the `socsim-llm` crate for the LLM layer; it does **not** use `reqwest` or `sha2` (socsim-llm owns the HTTP transport and the prompt-cache hashing). It needs no spatial grid or network (`socsim-grid` / `socsim-net`): the interaction is market-mediated, so it depends only on `socsim-core` + `socsim-engine` + `socsim-llm`.
 
@@ -46,7 +46,7 @@ uv run competeai-tools show-experiment-settings --results-dir results/latest
 
 ### Offline (no-LLM) smoke
 
-The full day loop, output writers and Python visualization can be exercised without any live LLM via a scripted mock client:
+The full day loop, output writers and Python visualization can be exercised without any live LLM via a scripted mock client. `run`, `reproduce` and the `mock_smoke` example all accept an offline path (`--mock`, or the dedicated example), which a sandbox/CI uses to drive the whole pipeline deterministically:
 
 ```bash
 cargo run --release --example mock_smoke -- results
@@ -63,14 +63,34 @@ cargo run --release -- sweep \
 uv run competeai-tools visualize-sweep
 ```
 
-## Scope
+### Reproduce the paper's Table 2 occurrence frequencies
 
-This repository currently implements **Phase 1** (the `MarketWorld` + five mechanisms over the six-phase loop, the LLM decision layer with Ollama→OpenAI fallback + caching, the `run` subcommand, and the Matthew-effect metrics) and **Phase 2** (the `sweep` over store count × customer count, plus the Python `visualize` / `visualize-sweep` / `show-experiment-settings` tools). The one-shot paper reproduction (`reproduce`, Table 2 occurrence-frequency batch) and the deeper group-customer analysis are left as future work (Phase 3); clean extension points are kept throughout, including a `customer-mode group` stub for the group-customer comparison.
+`reproduce` batches the individual-customer runs and the group-customer runs, scores the observed frequencies (winner-take-all, quality improvement, menu similarity) against the paper's Table 2 with a pass/off band, and writes `reproduce_summary.json` plus per-condition metrics. The companion Python tool renders the occurrence-frequency, Matthew-effect and share-trajectory figures.
+
+```bash
+# Offline (scripted mock) batch reproduction + figures
+uv run competeai-tools reproduce --run --mock
+# Or with a live LLM, after building and starting Ollama:
+#   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
+```
+
+## What this project does
+
+The project implements the full CompeteAI virtual-town model and its analyses end to end:
+
+- **`run`** — one configuration of the LLM-driven market-competition ABM (`MarketWorld` + five mechanisms over the six-phase loop, the LLM decision layer with Ollama→OpenAI fallback + caching, and the Matthew-effect metrics). `--customer-mode {individual,group}` selects whether the judges act as independent individuals or as deliberating groups, and `--mock` drives it offline.
+- **`sweep`** — a parameter sweep over store count × customer count, summarising the Matthew-effect metrics per condition.
+- **`reproduce`** — a one-shot batch of the paper's Table 2 occurrence frequencies, comparing the individual-customer and group-customer conditions and scoring the observed winner-take-all / quality-improvement / menu-similarity frequencies against the paper.
+- **Python `competeai-tools`** — `visualize`, `visualize-sweep`, `show-experiment-settings` and `reproduce` for plotting and inspecting the results.
+
+### Customer-mode comparison (individual vs group)
+
+The judges can act either as independent individuals or as **deliberating groups**. Individual customers are susceptible to social proof and herd toward the popular restaurant, so an early lead compounds into winner-take-all (the Matthew effect). A group instead deliberates: members voice their own budget and taste rather than following the crowd, and the group apportions its members across restaurants by that internal diversity. This disrupts the positive-feedback loop and dampens winner-take-all — the model reproduces the paper's individual → group attenuation (Table 2: 66.7% → 16.7%). Select the mode with `--customer-mode {individual,group}` on `run`, `sweep` and `reproduce`.
 
 ## Documentation
 
 - [Use cases](docs/usecases.md) — what you can do with this project, with pointers to the rest of the docs.
-- [CLI](docs/cli.md) — the Rust CLI: the `run` and `sweep` subcommands and their flags, plus the LLM environment variables.
+- [CLI](docs/cli.md) — the Rust CLI: the `run`, `sweep` and `reproduce` subcommands and their flags, plus the LLM environment variables.
 - [Visualization](docs/visualization.md) — the Python `competeai-tools` and how to interpret the outputs.
 - [Architecture](docs/architecture.md) — repository structure, the two-layer determinism, the socsim/`socsim-llm` framework, the mechanisms, the metrics, and references.
 

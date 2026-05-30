@@ -18,13 +18,24 @@ See [CLI](cli.md) for all `run` flags and the LLM environment variables, and [Vi
 
 ## 2. Compare individual vs group customers
 
-The paper finds grouping disrupts the positive feedback loop and softens winner-take-all (66.7% → 16.7%). Switch the customer mode:
+The paper finds grouping disrupts the positive feedback loop and softens winner-take-all (66.7% → 16.7%). Individual customers herd on social proof, so an early lead compounds; a group instead deliberates (each member voices its own budget/taste rather than following the crowd) and apportions its members across restaurants, dampening the herd. Switch the customer mode:
 
 ```bash
 cargo run --release -- run --customer-mode group --group-size 4 --days 15 --runs 6 --seed 42
 ```
 
-## 3. Sensitivity sweep
+## 3. Reproduce the paper's Table 2 occurrence frequencies
+
+Batch the individual-customer and group-customer conditions, scoring the observed winner-take-all / quality-improvement / menu-similarity frequencies against the paper's Table 2 and rendering the figures:
+
+```bash
+# Offline (scripted mock) batch reproduction + figures
+uv run competeai-tools reproduce --run --mock
+# Or with a live LLM:
+#   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
+```
+
+## 4. Sensitivity sweep
 
 Sweep store count × customer count to map the conditions under which the Matthew effect emerges:
 
@@ -33,16 +44,17 @@ cargo run --release -- sweep --n-firms-values 2,3,4 --n-customers-min 20 --n-cus
 uv run competeai-tools visualize-sweep
 ```
 
-## 4. Run offline (no live LLM)
+## 5. Run offline (no live LLM)
 
-Exercise the full day loop, the output writers and the Python visualization without any LLM, using a scripted mock client:
+Exercise the full day loop, the output writers and the Python visualization without any LLM, using a scripted mock client — either the dedicated example or the `--mock` flag on `run` / `reproduce`:
 
 ```bash
 cargo run --release --example mock_smoke -- results
+cargo run --release -- run --mock --customer-mode group --n-customers 50 --days 15 --runs 6 --seed 42
 uv run competeai-tools visualize
 ```
 
-## 5. Inspect a run's settings and LLM metadata
+## 6. Inspect a run's settings and LLM metadata
 
 ```bash
 uv run competeai-tools show-experiment-settings --results-dir results/latest

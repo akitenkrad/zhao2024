@@ -4,11 +4,10 @@ Usage:
     competeai-tools visualize [...]
     competeai-tools visualize-sweep [...]
     competeai-tools show-experiment-settings [...]
+    competeai-tools reproduce [...]
 
 各サブコマンドに続く引数は，対応するモジュールの argparse がそのまま受け取る．
 サブコマンドレベルで `--help` を付けると，そのサブコマンド自身のヘルプが表示される．
-
-`reproduce` (論文 Table 2 の発生頻度一括再現・グループ客深掘り) は Phase 3 で実装予定 (未提供)．
 
 dispatcher の組み立ては共有ヘルパ `socsim_tools.cli.build_dispatcher` に委譲する
 (prog 名・サブコマンド・ヘルプ文・argv ルーティングは従来と同一)．可視化/設定表示の
@@ -34,6 +33,10 @@ main = build_dispatcher(
         "show-experiment-settings": (
             "実行結果ディレクトリの設定 (config / sweep_config / run_metadata) の表示",
             "competeai_tools.show_experiment_settings:main",
+        ),
+        "reproduce": (
+            "論文 Table 2 の発生頻度 (個人/グループ客の勝者総取り・品質改善) を一括再現し図示",
+            "competeai_tools.reproduce_paper:main",
         ),
     },
 )

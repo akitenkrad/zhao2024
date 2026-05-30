@@ -37,10 +37,10 @@ socsim's core is deterministic and LLM-free; an LLM is inherently not. The desig
 
 | Layer | Components | Reproducibility |
 |---|---|---|
-| Deterministic socsim core | restaurant/customer init (funds, incomes, preferences, menus), activation order, group majority tie-breaking, customer–firm market matching, revenue/cost/funds accounting, all metrics | bit-for-bit given the seed (ChaCha20 `SimRng`) |
+| Deterministic socsim core | restaurant/customer init (funds, incomes, preferences, menus), activation order, group deliberation/apportionment tie-breaking, customer–firm market matching, revenue/cost/funds accounting, all metrics | bit-for-bit given the seed (ChaCha20 `SimRng`) |
 | Non-deterministic LLM layer | firm strategy reflection + customer choice (the two `Decision` mechanisms) | pseudo-deterministic via prompt→response cache + `temperature=0` + fixed seed |
 
-The RNG streams are derived from one root seed (matching schelling1971 / axelrod1997 / li2024): `derive_seed(root, &[0])` initialises the world (firm funds, customer traits) and `derive_seed(root, &[1])` seeds the engine (activation order, group-tie breaking). `&[2]`, `&[3]`, … are reserved for additional streams.
+The RNG streams are derived from one root seed (matching schelling1971 / axelrod1997 / li2024): `derive_seed(root, &[0])` initialises the world (firm funds, customer traits) and `derive_seed(root, &[1])` seeds the engine (activation order, group deliberation/apportionment tie-breaking). `&[2]`, `&[3]`, … are reserved for additional streams.
 
 ## The world
 
@@ -54,7 +54,7 @@ The synchronous daily step (1 engine tick = 1 day) runs the six phases in order;
 |---|---|---|
 | `MarketResetMechanism` | Environment | stash the previous day's daybook into scratch, then reset the day's market |
 | `CompetitionMatthewMechanism` | **Decision** | each LLM firm reflects on the daybook + rival info + memory and revises price / chef salary / advertisement; then snapshots all firm offers into scratch (**LLM**) |
-| `CustomerChoiceMechanism` | **Decision** | each LLM customer picks a restaurant from the presented offers; group customers decide by majority (ties broken by `ctx.rng`) (**LLM**) |
+| `CustomerChoiceMechanism` | **Decision** | each LLM customer picks a restaurant from the presented offers. Individual customers choose independently; group customers deliberate (a group-framed prompt that resists social proof) and the group then apportions its members across restaurants by the vote distribution (largest-remainder, RNG-broken), which dampens the herd. (**LLM**) |
 | `PatronageMechanism` | Interaction | customer–firm matching (patronage), the dining experience, comment generation visible to other customers |
 | `RevenueRewardMechanism` | Reward | revenue/cost/funds, reputation update, and the daily Matthew metrics (revenue Gini, market-share concentration) |
 | `ReflectionMechanism` | PostStep | each firm summarises the day into memory; firm exit (`alive = false` when funds < 0); `request_stop` when a firm exits or `day == days - 1` |

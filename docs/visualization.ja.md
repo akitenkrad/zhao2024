@@ -30,6 +30,22 @@ uv run competeai-tools visualize-sweep
 uv run competeai-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
 ```
 
+## `reproduce`
+
+`competeai reproduce` が書き出す `reproduce_summary.json` (および条件別 `metrics_individual.csv` / `metrics_group.csv`) を読み，観測 vs 論文のアンカー表 (合否) を表示し，3 つの図を書き出す:
+
+- `occurrence_frequency.png` — 個人客 vs グループ客の勝者総取り・品質改善 発生頻度．論文 Table 2 の参照ライン (66.7% / 16.7% / 86.67%) 付き．
+- `matthew_effect.png` — 条件別の最終収益 Gini・最終最大市場シェア (市場集中の強度)．
+- `share_trajectory.png` — 代表 run の最大市場シェア時系列 (個人客 vs グループ客)．
+
+`--run` で先に Rust バイナリを実行する．オフライン一括には `--mock` (必要なら `--quick`) を付ける．
+
+```bash
+uv run competeai-tools reproduce --run --mock        # オフライン一括 + 図
+uv run competeai-tools reproduce                       # 既存 results/latest を可視化
+uv run competeai-tools reproduce --json                # 機械可読な要約
+```
+
 ## `show-experiment-settings`
 
 `config.json` (run) または `sweep_config.json` (sweep) を整形表示し，存在すれば LLM の `run_metadata.json` (モデル・endpoint・温度・seed・cache-hit 率・winner_take_all・quality_improved) も併せて表示する．`results/latest` は symlink 経由で解決する．`--json` で機械可読出力．

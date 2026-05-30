@@ -154,14 +154,32 @@ pub struct FirmOffer {
 /// 顧客選択プロンプトを構築する．
 ///
 /// LLM には «来店する店舗の index (0 始まり)» を JSON で答えさせる．グループ客では
-/// 各メンバーが個別に答え，呼び出し側が多数決を取る．
-pub fn customer_choice_prompt(customer: &Customer, day: u64, offers: &[FirmOffer]) -> String {
+/// 各メンバーが個別に答え，呼び出し側 (`CustomerChoiceMechanism`) がメンバーを
+/// 各店へ配分する．`group_deliberation = true` のとき «グループ熟議» の枠組みを
+/// 提示し，人気 (社会的証明) に流されず «自分の予算と好み» に忠実に選ぶよう促す
+/// (= 個別客の同調を打ち消す反同調バイアス; 論文のグループ化による勝者総取りの緩和)．
+pub fn customer_choice_prompt(
+    customer: &Customer,
+    day: u64,
+    offers: &[FirmOffer],
+    group_deliberation: bool,
+) -> String {
     let mut s = String::new();
-    s.push_str(
-        "You are a customer in a virtual town deciding which restaurant to visit for dinner \
-         today. Pick the single restaurant that best fits your taste, budget and the available \
-         information.\n\n",
-    );
+    if group_deliberation {
+        s.push_str(
+            "You are dining out with your group (family, colleagues or friends) in a virtual \
+             town. Your group deliberates together: rather than simply following the most \
+             popular or hyped restaurant, each member voices their own budget and taste so the \
+             party is not swayed by the crowd. Pick the single restaurant that genuinely fits \
+             YOUR own budget and preference best.\n\n",
+        );
+    } else {
+        s.push_str(
+            "You are a customer in a virtual town deciding which restaurant to visit for dinner \
+             today. Pick the single restaurant that best fits your taste, budget and the available \
+             information.\n\n",
+        );
+    }
     s.push_str(&format!("## Day {}\n", day));
     s.push_str("## You\n");
     s.push_str(&format!("- Daily budget: {:.0}\n", customer.income));

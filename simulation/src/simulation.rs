@@ -141,6 +141,21 @@ pub fn run(cfg: &Config) -> Result<SimulationResult, String> {
     run_with_client(cfg, client)
 }
 
+/// オフライン (LLM 不要) の決定論的 mock でシミュレーションを実行する．
+///
+/// [`crate::reproduce_mock::build_reproduce_client`] の scripted クライアント
+/// (in-memory cache) で駆動する．`reproduce --mock` / `run --mock` から使い，
+/// ライブ LLM 無しで論文の定性的挙動 (品質改善・マタイ効果・グループ緩和) を
+/// 構造的に再現する．mock は in-memory cache なので永続キャッシュ保存はスキップ
+/// される (`cfg.llm.cache_path` は無視扱い)．
+pub fn run_mock(cfg: &Config) -> Result<SimulationResult, String> {
+    // mock は永続キャッシュを持たないため，誤って save() を呼ばないよう cache_path
+    // を落とした設定で駆動する (in-memory cache は save() が no-op だが明示的に倒す)．
+    let mut mock_cfg = cfg.clone();
+    mock_cfg.llm.cache_path = None;
+    run_with_client(&mock_cfg, crate::reproduce_mock::build_reproduce_client())
+}
+
 /// 与えられた [`CompeteClient`] でシミュレーションを実行する．
 ///
 /// 本番は [`build_live_client`] の結果を，テストは [`crate::llm::wrap_client`] で

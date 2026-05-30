@@ -30,6 +30,22 @@ uv run competeai-tools visualize-sweep
 uv run competeai-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
 ```
 
+## `reproduce`
+
+Reads `reproduce_summary.json` (and the per-condition `metrics_individual.csv` / `metrics_group.csv`) written by `competeai reproduce`, prints the observed-vs-paper anchor table (pass/off), and writes three figures:
+
+- `occurrence_frequency.png` — winner-take-all and quality-improvement frequencies for individual vs group customers, with the paper's Table 2 reference lines (66.7% / 16.7% / 86.67%).
+- `matthew_effect.png` — final revenue Gini and final max market share per condition (market-concentration strength).
+- `share_trajectory.png` — the representative run's max-market-share time series, individual vs group.
+
+`--run` first executes the Rust binary; add `--mock` (and optionally `--quick`) for an offline batch.
+
+```bash
+uv run competeai-tools reproduce --run --mock        # offline batch + figures
+uv run competeai-tools reproduce                       # visualize existing results/latest
+uv run competeai-tools reproduce --json                # machine-readable summary
+```
+
 ## `show-experiment-settings`
 
 Pretty-prints `config.json` (run) or `sweep_config.json` (sweep) plus, if present, the LLM `run_metadata.json` (model, endpoint, temperature, seed, cache-hit rate, winner_take_all, quality_improved). `results/latest` is resolved through the symlink. `--json` emits machine-readable output.

@@ -1,11 +1,11 @@
 //! Zhao et al. (2024) "CompeteAI" — 再現実験の CLI エントリポイント．
 //!
-//! `run`   : 単一設定で LLM 駆動の市場競争 ABM を実行する．
-//! `sweep` : 店舗数 × 顧客数 (× 顧客構成) を走査し，マタイ効果指標 (収益 Gini・
-//!           最大市場シェア・勝者総取り・品質改善) を `sweep_summary.csv` に集計する．
-//!
-//! Phase 3 の `reproduce` (論文 Table 2 の発生頻度一括再現・グループ客深掘り) は
-//! 未実装 (拡張点)．
+//! `run`       : 単一設定で LLM 駆動の市場競争 ABM を実行する (`--mock` でオフライン)．
+//! `sweep`     : 店舗数 × 顧客数 (× 顧客構成) を走査し，マタイ効果指標 (収益 Gini・
+//!               最大市場シェア・勝者総取り・品質改善) を `sweep_summary.csv` に集計する．
+//! `reproduce` : 論文 Table 2 の発生頻度 (個人客/グループ客の勝者総取り・品質改善・
+//!               メニュー類似度) を一括再現し，観測 vs 論文の PASS/off を
+//!               `reproduce_summary.json` に集計する (`--mock` でオフライン scripted 駆動)．
 
 use std::fs;
 use std::path::Path;
@@ -16,7 +16,7 @@ use socsim_results::{refresh_latest_symlink, timestamp, write_csv, write_json};
 use competeai_simulation::config::{parse_customer_mode, Config, CustomerMode, LlmSettings};
 use competeai_simulation::metrics::mean;
 use competeai_simulation::simulation::{
-    ensure_output_dir, run, save_metrics, save_run_metadata, SimulationResult,
+    ensure_output_dir, run, run_mock, save_metrics, save_run_metadata, SimulationResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,6 +39,8 @@ enum Commands {
     Run(RunArgs),
     /// 店舗数 × 顧客数 を走査し，マタイ効果指標を集計する．
     Sweep(SweepArgs),
+    /// 論文 Table 2 の発生頻度 (勝者総取り・品質改善・メニュー類似度) を一括再現する．
+    Reproduce(ReproduceArgs),
 }
 
 #[derive(Parser, Debug)]
@@ -82,6 +84,11 @@ struct RunArgs {
     /// プロンプト→応答キャッシュの保存先 (既定 .llm_cache/cache.json)．
     #[arg(long, default_value = ".llm_cache/cache.json")]
     cache_path: String,
+
+    /// LLM を呼ばず決定論的 scripted mock で駆動する (オフライン検証用)．
+    /// サンドボックス・CI では `--mock` を付ける (ライブ LLM 不要)．
+    #[arg(long, default_value_t = false)]
+    mock: bool,
 
     /// 結果出力ディレクトリ．
     #[arg(long, default_value = "results")]
@@ -133,6 +140,62 @@ struct SweepArgs {
     /// プロンプト→応答キャッシュの保存先 (sweep 全体で共有しヒット率を高める)．
     #[arg(long, default_value = ".llm_cache/cache.json")]
     cache_path: String,
+
+    /// 結果出力ベースディレクトリ．
+    #[arg(long, default_value = "results")]
+    output_dir: String,
+}
+
+#[derive(Parser, Debug)]
+struct ReproduceArgs {
+    /// 店舗数 M (論文標準 2)．
+    #[arg(long, default_value_t = 2)]
+    n_firms: usize,
+
+    /// 顧客数 N (論文標準 50)．
+    #[arg(long, default_value_t = 50)]
+    n_customers: usize,
+
+    /// グループ客のときの 1 グループ人数．
+    #[arg(long, default_value_t = 4)]
+    group_size: usize,
+
+    /// シミュレーション日数 (論文標準 15)．
+    #[arg(long, default_value_t = 15)]
+    days: usize,
+
+    /// 個人客の独立試行数 (論文 Table 2 = 9 ラン)．
+    #[arg(long, default_value_t = 9)]
+    individual_runs: usize,
+
+    /// グループ客の独立試行数 (論文 Table 2 = 6 ラン)．
+    #[arg(long, default_value_t = 6)]
+    group_runs: usize,
+
+    /// 乱数シード基点 (各条件・試行は derive により独立化する)．
+    #[arg(long, default_value_t = 42)]
+    seed: u64,
+
+    /// LLM を呼ばず決定論的 scripted mock で駆動する (オフライン検証用)．
+    /// サンドボックス・CI では `--mock` を付ける (ライブ LLM 不要)．
+    #[arg(long, default_value_t = false)]
+    mock: bool,
+
+    /// LLM 生成温度 (live 時のみ)．
+    #[arg(long, default_value_t = 0.0)]
+    llm_temperature: f32,
+
+    /// LLM 生成シード (live 時のみ)．
+    #[arg(long, default_value_t = 0)]
+    llm_seed: u64,
+
+    /// プロンプト→応答キャッシュの保存先 (live 時のみ; 全条件で共有)．
+    #[arg(long, default_value = ".llm_cache/cache.json")]
+    cache_path: String,
+
+    /// 軽量モード (N と試行数と日数を縮小; 動作確認用)．
+    #[arg(long, default_value_t = false)]
+    quick: bool,
 
     /// 結果出力ベースディレクトリ．
     #[arg(long, default_value = "results")]
@@ -229,8 +292,12 @@ fn cmd_run(args: RunArgs) {
         args.runs,
     );
     println!(
-        "LLM: temp={} llm_seed={} cache={} | seed: {:?}",
-        args.llm_temperature, args.llm_seed, args.cache_path, args.seed
+        "LLM: temp={} llm_seed={} cache={} | seed: {:?}{}",
+        args.llm_temperature,
+        args.llm_seed,
+        args.cache_path,
+        args.seed,
+        if args.mock { " | MOCK" } else { "" },
     );
     println!("出力先: {}", output_dir);
     println!("-------------------------------------------------");
@@ -259,7 +326,11 @@ fn cmd_run(args: RunArgs) {
             ..Config::default()
         };
 
-        let result = run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+        let result = if args.mock {
+            run_mock(&cfg).unwrap_or_else(|e| panic!("mock 実行に失敗: {}", e))
+        } else {
+            run(&cfg).unwrap_or_else(|e| panic!("実行に失敗: {}", e))
+        };
         if result.winner_take_all {
             wta_count += 1;
         }
@@ -490,6 +561,329 @@ fn summarize(
 }
 
 // ---------------------------------------------------------------------------
+// reproduce
+// ---------------------------------------------------------------------------
+
+/// 1 条件 (顧客構成) を `runs` 回回した発生頻度の集計セル．
+#[derive(serde::Serialize, Clone)]
+struct ReproCell {
+    /// 条件ラベル (individual / group)．
+    customer_mode: String,
+    runs: usize,
+    /// 勝者総取り (WTA) が発生した試行数．
+    wta_count: usize,
+    /// 勝者総取り発生頻度 ∈ [0,1]．
+    wta_freq: f64,
+    /// 品質改善 (少なくとも一方の店) が発生した試行数．
+    quality_count: usize,
+    /// 品質改善発生頻度 ∈ [0,1]．
+    quality_freq: f64,
+    /// 試行平均の最終メニュー類似度 (差別化/模倣の動的均衡)．
+    mean_menu_similarity: f64,
+    /// 試行平均の最終収益 Gini (マタイ効果の強度)．
+    mean_final_gini: f64,
+    /// 試行平均の最終最大市場シェア．
+    mean_final_share_max: f64,
+}
+
+/// 1 条件 (顧客構成) を `runs` 回実行して発生頻度を集計する．
+#[allow(clippy::too_many_arguments)]
+fn run_repro_cell(
+    customer_mode: CustomerMode,
+    base: &Config,
+    runs: usize,
+    root_seed: u64,
+    mock: bool,
+    out_dir: &str,
+) -> ReproCell {
+    let mut wta_count = 0usize;
+    let mut quality_count = 0usize;
+    let mut sum_menu = 0.0;
+    let mut sum_gini = 0.0;
+    let mut sum_share = 0.0;
+    // 代表 (run 0) のメトリクス履歴を CSV に保存し，Python 側で時系列描画に使う．
+    let mut representative: Option<Vec<competeai_simulation::metrics::DailyMetric>> = None;
+
+    for run_idx in 0..runs.max(1) {
+        let seed = socsim_core::derive_seed(
+            root_seed,
+            &[label_hash(customer_mode.label()), run_idx as u64],
+        );
+        let cfg = Config {
+            customer_mode,
+            seed: Some(seed),
+            output_dir: out_dir.to_string(),
+            ..base.clone()
+        };
+        let result = if mock {
+            run_mock(&cfg)
+                .unwrap_or_else(|e| panic!("mock 実行に失敗 ({}): {e}", customer_mode.label()))
+        } else {
+            run(&cfg).unwrap_or_else(|e| panic!("実行に失敗 ({}): {e}", customer_mode.label()))
+        };
+
+        if result.winner_take_all {
+            wta_count += 1;
+        }
+        if result.quality_improved {
+            quality_count += 1;
+        }
+        // 最終日の集計指標 (全店同値なので先頭行で代表させる)．
+        let last_day = result
+            .metrics_history
+            .iter()
+            .map(|m| m.day)
+            .max()
+            .unwrap_or(0);
+        if let Some(last) = result.metrics_history.iter().find(|m| m.day == last_day) {
+            sum_menu += last.menu_similarity;
+            sum_gini += last.revenue_gini;
+            sum_share += last.market_share_max;
+        }
+        if run_idx == 0 {
+            representative = Some(result.metrics_history.clone());
+        }
+    }
+
+    let n = runs.max(1) as f64;
+    if let Some(hist) = representative {
+        let path = format!("{out_dir}/metrics_{}.csv", customer_mode.label());
+        socsim_results::write_csv(&hist, &path).expect("metrics_<mode>.csv の書き込みに失敗");
+    }
+
+    ReproCell {
+        customer_mode: customer_mode.label().to_string(),
+        runs: runs.max(1),
+        wta_count,
+        wta_freq: wta_count as f64 / n,
+        quality_count,
+        quality_freq: quality_count as f64 / n,
+        mean_menu_similarity: sum_menu / n,
+        mean_final_gini: sum_gini / n,
+        mean_final_share_max: sum_share / n,
+    }
+}
+
+/// ラベルを決定論的な u64 へ畳む (seed 派生用; FNV-1a)．
+fn label_hash(label: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in label.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// 観測値と論文 Table 2 の発生頻度を突き合わせた 1 アンカー．
+#[derive(serde::Serialize)]
+struct ReproAnchor {
+    name: String,
+    /// 論文値の表示文字列．
+    paper: String,
+    observed: f64,
+    target_lo: f64,
+    target_hi: f64,
+    pass: bool,
+}
+
+fn cmd_reproduce(args: ReproduceArgs) {
+    // quick モードは軽量化 (動作確認用; 論文値検証には使わない)．
+    let n_customers = if args.quick { 12 } else { args.n_customers };
+    let days = if args.quick { 6 } else { args.days };
+    let individual_runs = if args.quick { 3 } else { args.individual_runs };
+    let group_runs = if args.quick { 2 } else { args.group_runs };
+
+    let ts = timestamp();
+    let out_dir = format!("{}/reproduce_{}", args.output_dir, ts);
+    ensure_output_dir(&out_dir);
+    if !args.mock {
+        if let Some(parent) = Path::new(&args.cache_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+    }
+
+    // 基準設定 (全条件で共通; customer_mode/seed のみ条件ごとに差替)．
+    let base = Config {
+        n_firms: args.n_firms,
+        n_customers,
+        customer_mode: CustomerMode::Individual,
+        group_size: args.group_size,
+        days,
+        seed: Some(args.seed),
+        llm: LlmSettings {
+            temperature: args.llm_temperature,
+            seed: args.llm_seed,
+            cache_path: if args.mock {
+                None
+            } else {
+                Some(args.cache_path.clone())
+            },
+        },
+        output_dir: out_dir.clone(),
+        ..Config::default()
+    };
+
+    println!("=== Zhao et al. (2024) CompeteAI 論文 Table 2 発生頻度 一括再現 ===");
+    println!(
+        "M: {} | N: {} | days: {} | individual: {} ラン | group: {} ラン | mode: {}",
+        args.n_firms,
+        n_customers,
+        days,
+        individual_runs,
+        group_runs,
+        if args.mock { "MOCK" } else { "LIVE" },
+    );
+    println!("出力先: {out_dir}");
+    println!("-------------------------------------------------");
+
+    // --- 個人客 / グループ客の発生頻度を集計 ---
+    let individual = run_repro_cell(
+        CustomerMode::Individual,
+        &base,
+        individual_runs,
+        args.seed,
+        args.mock,
+        &out_dir,
+    );
+    let group = run_repro_cell(
+        CustomerMode::Group,
+        &base,
+        group_runs,
+        args.seed,
+        args.mock,
+        &out_dir,
+    );
+
+    // --- アンカー評価 (論文 Table 2 / 本文の発生頻度; ±許容幅) ---
+    let mut anchors: Vec<ReproAnchor> = Vec::new();
+    let mut push = |name: &str, paper: &str, obs: f64, lo: f64, hi: f64| {
+        anchors.push(ReproAnchor {
+            name: name.to_string(),
+            paper: paper.to_string(),
+            observed: obs,
+            target_lo: lo,
+            target_hi: hi,
+            pass: obs >= lo && obs <= hi,
+        });
+    };
+
+    // 全ラン (個人 + グループ) の品質改善頻度 (論文 86.67%, ±10pt)．
+    let total_quality = individual.quality_count + group.quality_count;
+    let total_runs = (individual.runs + group.runs).max(1);
+    let quality_freq_all = total_quality as f64 / total_runs as f64;
+    let total_menu = individual.mean_menu_similarity * individual.runs as f64
+        + group.mean_menu_similarity * group.runs as f64;
+    let menu_all = total_menu / total_runs as f64;
+
+    // 1. 個人客の勝者総取り頻度 (論文 66.7%, ±15pt)．
+    push(
+        "wta_individual (paper 66.7%)",
+        "66.7%",
+        individual.wta_freq,
+        0.667 - 0.15,
+        0.667 + 0.15,
+    );
+    // 2. グループ客の勝者総取り頻度 (論文 16.7%, ±15pt)．
+    push(
+        "wta_group (paper 16.7%)",
+        "16.7%",
+        group.wta_freq,
+        0.0,
+        0.167 + 0.15,
+    );
+    // 3. グループ化は勝者総取りを緩和する (個人 > グループ)．
+    push(
+        "group_dampens_wta (individual > group)",
+        "individual > group",
+        individual.wta_freq - group.wta_freq,
+        0.0,
+        f64::INFINITY,
+    );
+    // 4. 品質改善頻度 (論文 86.67%, ±10pt)．
+    push(
+        "quality_improved_all (paper 86.67%)",
+        "86.67%",
+        quality_freq_all,
+        0.8667 - 0.10,
+        1.0,
+    );
+    // 5. メニュー類似度 動的均衡 (論文 約36%; 参考値)．
+    //    本 Phase 1 モデルは店舗のメニュー品目 (料理名集合) を改訂しないため，
+    //    類似度は «初期差別化» の構造値で一定となる (差別化・模倣による «メニュー
+    //    変異» は本モデルの範囲外)．論文値 ±10pt を参考バンドとして観測値を記録する
+    //    が，モデルの限界として OFF となりうる (発生頻度の中核アンカーではない)．
+    push(
+        "menu_similarity_all (paper ~36%; structural)",
+        "~36% (model holds menus fixed)",
+        menu_all,
+        0.36 - 0.10,
+        0.36 + 0.10,
+    );
+
+    // --- コンソール出力 ---
+    println!("--- 顧客構成別 発生頻度 ---");
+    println!(
+        "{:<12} {:>5} {:>10} {:>12} {:>10} {:>8}",
+        "mode", "runs", "WTA", "quality", "menu_sim", "Gini"
+    );
+    for c in [&individual, &group] {
+        println!(
+            "{:<12} {:>5} {:>9.1}% {:>11.1}% {:>10.3} {:>8.3}",
+            c.customer_mode,
+            c.runs,
+            c.wta_freq * 100.0,
+            c.quality_freq * 100.0,
+            c.mean_menu_similarity,
+            c.mean_final_gini,
+        );
+    }
+    println!("--- 論文 Table 2 アンカー (観測 vs 論文) ---");
+    for a in &anchors {
+        let hi = if a.target_hi.is_infinite() {
+            "∞".to_string()
+        } else {
+            format!("{:.3}", a.target_hi)
+        };
+        println!(
+            "[{}] {:<42} obs={:.4} target=[{:.3},{}] paper={}",
+            if a.pass { "PASS" } else { "OFF " },
+            a.name,
+            a.observed,
+            a.target_lo,
+            hi,
+            a.paper,
+        );
+    }
+    let n_pass = anchors.iter().filter(|a| a.pass).count();
+    println!("-------------------------------------------------");
+    println!("{}/{} アンカーが in-band", n_pass, anchors.len());
+
+    // --- reproduce_summary.json ---
+    let summary = serde_json::json!({
+        "timestamp": ts,
+        "mode": if args.mock { "mock" } else { "live" },
+        "config": {
+            "n_firms": args.n_firms,
+            "n_customers": n_customers,
+            "days": days,
+            "group_size": args.group_size,
+            "individual_runs": individual_runs,
+            "group_runs": group_runs,
+            "seed": args.seed,
+        },
+        "cells": [individual, group],
+        "anchors": anchors,
+        "n_pass": n_pass,
+        "n_total": anchors.len(),
+    });
+    let path = format!("{out_dir}/reproduce_summary.json");
+    write_json(&summary, &path).expect("reproduce_summary.json の書き込みに失敗");
+    let _ = refresh_latest_symlink(&args.output_dir, &format!("reproduce_{ts}"));
+    println!("サマリ → {path}");
+    println!("条件別メトリクス → {out_dir}/metrics_<mode>.csv");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -498,5 +892,6 @@ fn main() {
     match cli.command {
         Commands::Run(args) => cmd_run(args),
         Commands::Sweep(args) => cmd_sweep(args),
+        Commands::Reproduce(args) => cmd_reproduce(args),
     }
 }

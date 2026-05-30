@@ -18,13 +18,24 @@ uv run competeai-tools visualize
 
 ## 2. 個人客 vs グループ客の比較
 
-論文ではグルーピングが正のフィードバックループを攪乱し勝者総取りを緩和する (66.7% → 16.7%)．顧客モードを切り替える:
+論文ではグルーピングが正のフィードバックループを攪乱し勝者総取りを緩和する (66.7% → 16.7%)．個人客は社会的証明に同調するため初期優位が増幅するが，グループは熟議し (メンバーが流行に従わず各自の予算・好みを表明)，メンバーを各店へ配分して同調を緩和する．顧客モードを切り替える:
 
 ```bash
 cargo run --release -- run --customer-mode group --group-size 4 --days 15 --runs 6 --seed 42
 ```
 
-## 3. 感度分析スイープ
+## 3. 論文 Table 2 の発生頻度を再現
+
+個人客・グループ客の条件を一括実行し，観測された勝者総取り / 品質改善 / メニュー類似度の発生頻度を論文 Table 2 と突き合わせ，図を描く:
+
+```bash
+# オフライン (scripted mock) 一括再現 + 図
+uv run competeai-tools reproduce --run --mock
+# ライブ LLM の場合:
+#   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
+```
+
+## 4. 感度分析スイープ
 
 店舗数 × 顧客数 を走査し，マタイ効果が創発する条件を体系的に明らかにする:
 
@@ -33,16 +44,17 @@ cargo run --release -- sweep --n-firms-values 2,3,4 --n-customers-min 20 --n-cus
 uv run competeai-tools visualize-sweep
 ```
 
-## 4. オフライン実行 (ライブ LLM 不要)
+## 5. オフライン実行 (ライブ LLM 不要)
 
-スクリプト化した mock クライアントで，日次ループ・出力ライタ・Python 可視化を LLM なしに検証する:
+スクリプト化した mock クライアントで，日次ループ・出力ライタ・Python 可視化を LLM なしに検証する — 専用 example か，`run` / `reproduce` の `--mock` フラグを使う:
 
 ```bash
 cargo run --release --example mock_smoke -- results
+cargo run --release -- run --mock --customer-mode group --n-customers 50 --days 15 --runs 6 --seed 42
 uv run competeai-tools visualize
 ```
 
-## 5. 実行設定と LLM メタデータの確認
+## 6. 実行設定と LLM メタデータの確認
 
 ```bash
 uv run competeai-tools show-experiment-settings --results-dir results/latest
