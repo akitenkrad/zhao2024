@@ -9,10 +9,10 @@ replications/zhao2024/
 ├── Cargo.toml                  # Rust workspace (members = ["simulation"])
 ├── pyproject.toml              # uv workspace (members = ["tools"])
 ├── simulation/                 # Rust crate `competeai-simulation` (bin `competeai`)
-│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"])
+│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"]) + runvault
 │   ├── examples/mock_smoke.rs  # オフライン (ライブ LLM 不要) パイプラインスモーク
 │   ├── src/
-│   │   ├── main.rs             # clap: run / sweep
+│   │   ├── main.rs             # clap: run / sweep / reproduce
 │   │   ├── lib.rs
 │   │   ├── config.rs           # Config, CustomerMode, LLM 設定, seed 派生
 │   │   ├── world.rs            # MarketWorld (WorldState), Firm, Customer, Dish, Market
@@ -20,13 +20,17 @@ replications/zhao2024/
 │   │   ├── llm.rs              # socsim-llm ビルダ (Ollama→OpenAI + cache)
 │   │   ├── prompts.rs          # 店舗戦略 / 顧客選択プロンプト + 応答パース
 │   │   ├── metrics.rs          # 収益 Gini / 市場シェア / WTA / 料理スコア / メニュー類似度
-│   │   └── simulation.rs       # init_world + run ドライバ + 出力ライタ
+│   │   ├── record.rs           # runvault への記録: 日次集計・observation/terminal イベント・LLM ブロック
+│   │   ├── reproduce_mock.rs   # `reproduce --mock` 用の scripted client 配線
+│   │   └── simulation.rs       # init_world + run ドライバ (SimulationResult を返すだけ; ファイルは書かない)
 │   └── tests/integration_test.rs   # mock 駆動 (ScriptedClient); ライブ LLM 不要
 ├── tools/                      # Python package `competeai-tools` (module `competeai_tools`)
 │   └── src/competeai_tools/
 │       ├── cli.py
-│       ├── visualize.py        # 市場シェア + 収益 Gini + 料理スコア + メニュー類似度
-│       ├── visualize_sweep.py  # 店舗数 × 顧客数 の WTA 頻度 / 最終 Gini
+│       ├── visualize.py        # 市場シェア + 収益 Gini + 料理スコア + メニュー類似度 (run の events.jsonl/metrics.csv から)
+│       ├── visualize_sweep.py  # 店舗数 × 顧客数 の WTA 頻度 / 最終 Gini (子 run からスイープ表を組み直す)
+│       ├── sweep_summary.py    # sweep 親の子 run から «1 行 1 (セル×試行)» の表を組み直す
+│       ├── reproduce_paper.py  # `reproduce` 親の scope=sweep 指標 + reference.csv を読み，差分を表示し図を描く
 │       └── show_experiment_settings.py
 └── docs/                       # bilingual (.md + .ja.md)
 ```
@@ -61,9 +65,22 @@ RNG ストリームは単一 root seed から派生する (schelling1971 / axelr
 
 LLM クライアントと呼び出しメタデータコレクタは 2 つの `Decision` メカニズムと `Rc<RefCell<…>>` で共有し (li2024 パターン)，run ドライバが実行後にキャッシュ保存・cache-hit 率集計に使う．店舗オファーは店舗 `Decision` 完了時にスナップショットして step スコープの `scratch` 経由で `Interaction` に渡すので，日の途中の状態変化が同一日の他エージェント決定に波及しない．
 
+## 出力の置き場 (runvault)
+
+サブコマンド 1 回の実行が [runvault](https://github.com/akitenkrad/rs-runvault) の run 1 本になる: `<results-root>/competeai/<subcommand>_<timestamp>_<config_hash>_<execution_hash>/` というディレクトリが `run.json`・`config.json` (封筒．条件は `parameters` の下)・`metrics.csv`・`events.jsonl`・`status.json`・`manifest.csv`，そして `reproduce` では `reference.csv` を持つ．出力先の命名と同一性は runvault が持つので，本クレットはタイムスタンプ付きディレクトリも `latest` symlink も自分では作らない．`--output-dir` は runvault の results ルート (既定 `results`) である．`sweep` と `reproduce` は親 run 1 本 + 試行ごとの子 run で，`lineage.parent_run_uid` で結ばれる ([CLI](cli.ja.md) を参照)．
+
 ## 指標
 
-`metrics.csv` は **long-format** で，(日, 店舗) ごとに 1 行である．店舗固有列 (`day_customers`, `day_revenue`, `cumulative_revenue`, `avg_dish_score`, `avg_price`, `reputation`, `firm_alive`) は店舗で異なり，日次集計列 (`revenue_gini`, `market_share_max`, `menu_similarity`, `n_alive_firms`) は同一日の各行で同値である．
+runvault の `metrics.csv` は `run_uid,step,step_unit,scope,name,value` で系列 (どの主体か) を入れる列を持たないため，(日, 店舗) のパネルはここに置けない — 置くと全店舗の行が同じ主キー `(name, step, step_unit, scope)` を名乗って衝突する．そこで `crate::record` は数を粒度で分ける:
+
+| 置き場 | 粒度 | フィールド |
+|---|---|---|
+| `events.jsonl`, kind `observation` | (日, 店舗) ごとに 1 行 | `unit_id=firm-<id>`, `t`=日, `t_unit=round`, `firm`, `day_customers`, `day_revenue`, `cumulative_revenue`, `avg_dish_score`, `avg_price`, `reputation` |
+| `metrics.csv`, `scope=run`, 日次 | 全店で同値 | `revenue_gini`, `market_share_max`, `menu_similarity`, `n_alive_firms` |
+| `metrics.csv`, `scope=run`, step なし | run 全体で 1 値 | `n_units`, `final_day`, `winner_take_all` (0/1), `quality_improved` (0/1), `llm_calls`, `llm_cache_hits`, `llm_cache_hit_rate` (呼び出しが 1 本も無いときは行そのものを書かない — 0 回に対する率は «0» ではなく «定義できない») |
+| `events.jsonl`, kind `terminal` | 店舗ごとに 1 行 | `outcome` (`survive`/`exit`), `censored` (生存店は `true`), `budget` = 最後に観測した日 |
+
+`firm_alive` 列はもう無い: 店舗の撤退は当日の指標行を書いた **後** に `ReflectionMechanism` が判定して run を止めるので，旧 long-format `metrics.csv` では書き出された行すべてで `1` だった．店舗の帰趨はいまは `terminal` イベントが持つ．
 
 | 指標 | 定義 | 論文での対応 |
 |---|---|---|
@@ -74,9 +91,11 @@ LLM クライアントと呼び出しメタデータコレクタは 2 つの `De
 | `menu_similarity` | メニュー (料理名集合) の Jaccard | 差別化/模倣 (約36%) |
 | `quality_improved` | 少なくとも 1 店の平均スコアが Day1→最終日で上昇 (bool) | 品質改善 |
 
-## socsim / socsim-llm
+`sweep` / `reproduce` の条件横断表 (旧 `sweep_summary.csv`) もディスクには無い — `competeai_tools.sweep_summary.sweep_summary_table()` が sweep 親の子 run から «1 行 1 (セル×試行)» の表をその都度組み直す．`reproduce` の親は条件をまたいだ集約を `scope=sweep` 指標 (`wta_freq_individual`, `wta_freq_group`, `quality_freq_all`, `menu_similarity_all`, …) として持ち，論文の報告値そのものは `reference.csv` に入る (各行に `source` 付き)．±15pt / ±10pt の合否バンドは論文の主張ではなく本再現実装が置いたものなので **記録しない** — `competeai reproduce` のコンソール出力に留める．
 
-本クレットは `socsim-core` (`WorldState` / `Mechanism` / `Phase` / `SimClock` / `SimRng`) と `socsim-engine` (`SimulationBuilder`, `RandomActivationScheduler`, `run_observed`)，および `features = ["live"]` の `socsim-llm` (Ollama + OpenAI バックエンドを `FallbackClient` で束ねる) のみに依存する．本番クライアント型は `CachingClient<Box<dyn LlmClient>>` で，`FallbackClient<OllamaClient, OpenAiClient>` を `socsim-llm` の `impl LlmClient for Box<T>` (issue #26) で `Box<dyn LlmClient>` に型消去する．専用 newtype は不要で，同じ `CompeteClient` がテストで `mock::ScriptedClient` を受け取れる．git 依存は `Cargo.lock` で具体 commit に固定する．
+## socsim / socsim-llm / runvault
+
+本クレットは `socsim-core` (`WorldState` / `Mechanism` / `Phase` / `SimClock` / `SimRng`) と `socsim-engine` (`SimulationBuilder`, `RandomActivationScheduler`, `run_observed`)，および `features = ["live"]` の `socsim-llm` (Ollama + OpenAI バックエンドを `FallbackClient` で束ねる) のみに依存する．本番クライアント型は `CachingClient<Box<dyn LlmClient>>` で，`FallbackClient<OllamaClient, OpenAiClient>` を `socsim-llm` の `impl LlmClient for Box<T>` (issue #26) で `Box<dyn LlmClient>` に型消去する．専用 newtype は不要で，同じ `CompeteClient` がテストで `mock::ScriptedClient` を受け取れる．出力の記録は socsim/`socsim-llm` とは別の関心事で，[runvault](https://github.com/akitenkrad/rs-runvault) が持つ (上の「出力の置き場」を参照) — 本クレットは `socsim-core` / `socsim-engine` / `socsim-llm` に加え，4 つ目の git 依存として runvault にも依存する．git 依存は `Cargo.lock` で具体 commit に固定する．
 
 > 設計書 (§4.2/§7) は当初 `reqwest` + `sha2` を挙げていたが，本スイートは li2024 / chuang2024 と統一して `socsim-llm` に標準化することで上書きした．`socsim-llm` が HTTP と `hash(prompt+model)` キャッシュキーを所有するため，本クレットに `reqwest` / `sha2` は現れない．
 

@@ -11,7 +11,7 @@ LLM output is **outside** socsim's bit-reproducibility. The design therefore spl
 - **Deterministic socsim core** — restaurant/customer initialisation (funds, incomes, preferences), activation order, group majority tie-breaking, the customer–firm market matching, the fiscal accounting (revenue, costs, funds) and all metrics (revenue Gini, market-share concentration, winner-take-all, dish scores, menu similarity). Given a seed this reproduces bit-for-bit (`ctx.rng`, ChaCha20 `SimRng`).
 - **Non-deterministic LLM layer** — the two `Decision` mechanisms: the firm strategy reflection (`CompetitionMatthewMechanism`) and the customer choice (`CustomerChoiceMechanism`). Pseudo-determinised by `socsim-llm`'s `CachingClient` (a `hash(prompt+model)` → response cache), `temperature=0` and a fixed seed. The provider order is **Ollama first → OpenAI fallback** via `socsim-llm`'s `FallbackClient`.
 
-The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run writes `run_metadata.json` recording the model, endpoint, temperature, seed and cache-hit rate. Because the local default model (`llama3.2`) differs from the paper's `gpt-4`, reproduction targets are **qualitative**: the occurrence of the Matthew effect / market concentration, winner-take-all occurrence, and quality improvement — not the exact paper frequencies (winner-take-all 66.7% individuals / 16.7% groups, quality improvement 86.67%, menu similarity ≈ 36%). The `reproduce` subcommand batches the individual-vs-group runs and scores the observed frequencies against the paper's Table 2 with a directional pass/off band (see [CLI](docs/cli.md)).
+The cache — not the model — is the reproducibility mechanism: a warm cache replays identical responses, so a rerun is free and stable. Each run is recorded by [runvault](https://github.com/akitenkrad/rs-runvault): the model, endpoint and temperature go into the run's `run.json` `llm` block, and the call count and cache-hit rate are `metrics.csv` run-scope metrics. Because the local default model (`llama3.2`) differs from the paper's `gpt-4`, reproduction targets are **qualitative**: the occurrence of the Matthew effect / market concentration, winner-take-all occurrence, and quality improvement — not the exact paper frequencies (winner-take-all 66.7% individuals / 16.7% groups, quality improvement 86.67%, menu similarity ≈ 36%). The `reproduce` subcommand batches the individual-vs-group runs as a parent run plus one child run per trial, aggregates the observed frequencies as `scope=sweep` metrics on the parent, and prints them against the paper's Table 2 values (recorded in `reference.csv`) with a directional pass/off band that stays console-only (see [CLI](docs/cli.md)).
 
 > This project standardises on the `socsim-llm` crate for the LLM layer; it does **not** use `reqwest` or `sha2` (socsim-llm owns the HTTP transport and the prompt-cache hashing). It needs no spatial grid or network (`socsim-grid` / `socsim-net`): the interaction is market-mediated, so it depends only on `socsim-core` + `socsim-engine` + `socsim-llm`.
 
@@ -40,8 +40,8 @@ uv sync
 # Visualize the most recent run (market share, revenue Gini, dish score, menu similarity)
 uv run competeai-tools visualize
 
-# Inspect the run's settings and LLM metadata
-uv run competeai-tools show-experiment-settings --results-dir results/latest
+# Inspect the run's settings and LLM metadata (defaults to the latest run via `runvault path`)
+uv run competeai-tools show-experiment-settings
 ```
 
 ### Offline (no-LLM) smoke
@@ -65,7 +65,7 @@ uv run competeai-tools visualize-sweep
 
 ### Reproduce the paper's Table 2 occurrence frequencies
 
-`reproduce` batches the individual-customer runs and the group-customer runs, scores the observed frequencies (winner-take-all, quality improvement, menu similarity) against the paper's Table 2 with a pass/off band, and writes `reproduce_summary.json` plus per-condition metrics. The companion Python tool renders the occurrence-frequency, Matthew-effect and share-trajectory figures.
+`reproduce` batches the individual-customer runs and the group-customer runs as a parent run plus one child run per trial, aggregates the observed frequencies (winner-take-all, quality improvement, menu similarity) as `scope=sweep` metrics on the parent, and writes the paper's Table 2 values to `reference.csv` (the pass/off band itself is console-only). The companion Python tool renders the occurrence-frequency, Matthew-effect and share-trajectory figures.
 
 ```bash
 # Offline (scripted mock) batch reproduction + figures

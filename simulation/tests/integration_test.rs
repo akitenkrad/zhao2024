@@ -12,9 +12,7 @@
 use competeai_simulation::config::{derive_run_seed, Config, CustomerMode};
 use competeai_simulation::metrics::{market_share_max, revenue_gini, winner_take_all};
 use competeai_simulation::reproduce_mock::build_reproduce_client;
-use competeai_simulation::simulation::{
-    max_share_series, run_mock, run_with_client, SimulationResult,
-};
+use competeai_simulation::simulation::{max_share_series, run_with_client, SimulationResult};
 use competeai_simulation::world::Dish;
 use competeai_simulation::{
     config::LlmSettings,
@@ -231,7 +229,7 @@ fn repro_config(mode: CustomerMode) -> Config {
     }
 }
 
-/// 1 条件を `runs` 回 run_mock して勝者総取り発生頻度を測る (cmd_reproduce と同じ
+/// 1 条件を `runs` 回 scripted mock で回して勝者総取り発生頻度を測る (cmd_reproduce と同じ
 /// seed 派生規約)．
 fn wta_frequency(mode: CustomerMode, runs: usize, base_seed: u64) -> f64 {
     let mut wta = 0usize;
@@ -242,7 +240,8 @@ fn wta_frequency(mode: CustomerMode, runs: usize, base_seed: u64) -> f64 {
         let seed = derive_run_seed(base_seed.wrapping_add(mode_offset), run_idx);
         let mut cfg = repro_config(mode);
         cfg.seed = Some(seed);
-        let result: SimulationResult = run_mock(&cfg).expect("reproduce mock 実行に失敗");
+        let result: SimulationResult =
+            run_with_client(&cfg, build_reproduce_client()).expect("reproduce mock 実行に失敗");
         if result.winner_take_all {
             wta += 1;
         }
@@ -272,7 +271,7 @@ fn reproduce_mock_quality_improves() {
     // (論文ファクト8 / 品質改善 86.67%)．mock では単調品質投資で常に改善する．
     let mut cfg = repro_config(CustomerMode::Individual);
     cfg.seed = Some(123);
-    let result = run_mock(&cfg).unwrap();
+    let result = run_with_client(&cfg, build_reproduce_client()).unwrap();
     assert!(result.quality_improved, "品質改善が観測される");
 }
 
@@ -337,4 +336,42 @@ fn stops_at_final_day() {
         "日インデックスは days 未満 (0 始まり)"
     );
     assert!(result.final_day <= cfg.days, "完了ステップ数は days 以下");
+}
+
+// --------------------------------------------------------------------------- //
+// 店舗の帰趨 (terminal イベントの材料)
+// --------------------------------------------------------------------------- //
+
+#[test]
+fn firm_outcomes_cover_every_firm_and_survive_by_default() {
+    // 既定の初期資金では 1 店も潰れない．`firm_outcomes` は全店ぶん揃い，
+    // すべて生存している (= runvault の terminal は censored=true になる)．
+    let cfg = base_config();
+    let result = run_with_client(&cfg, scripted(0, 1.0)).unwrap();
+    assert_eq!(result.firm_outcomes.len(), cfg.n_firms);
+    assert!(result.firm_outcomes.iter().all(|o| o.alive));
+    // 書き出された日次行の firm_alive は例外なく 1 — 撤退の判定は日次指標を書いた
+    // 後の PostStep で行われるため，«潰れた店の行» は存在しない．店舗の帰趨を
+    // metrics 側から読めないので `firm_outcomes` が要る．
+    assert!(result.metrics_history.iter().all(|m| m.firm_alive == 1));
+}
+
+#[test]
+fn a_bankrupt_firm_is_reported_as_dead() {
+    // 資金を固定費 1 日ぶんにも満たない額にすると初日に資金が尽き，
+    // `ReflectionMechanism` が撤退させて実行が止まる．
+    let cfg = Config {
+        init_funds: 1.0,
+        ..base_config()
+    };
+    let result = run_with_client(&cfg, scripted(0, 1.0)).unwrap();
+    assert_eq!(result.firm_outcomes.len(), cfg.n_firms);
+    assert!(
+        result
+            .firm_outcomes
+            .iter()
+            .any(|o| !o.alive && o.funds < 0.0),
+        "資金が尽きた店舗が撤退として残る: {:?}",
+        result.firm_outcomes
+    );
 }

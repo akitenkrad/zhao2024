@@ -9,10 +9,10 @@ replications/zhao2024/
 ├── Cargo.toml                  # Rust workspace (members = ["simulation"])
 ├── pyproject.toml              # uv workspace (members = ["tools"])
 ├── simulation/                 # Rust crate `competeai-simulation` (bin `competeai`)
-│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"])
+│   ├── Cargo.toml              # socsim-core + socsim-engine + socsim-llm (features=["live"]) + runvault
 │   ├── examples/mock_smoke.rs  # offline (no live LLM) pipeline smoke
 │   ├── src/
-│   │   ├── main.rs             # clap: run / sweep
+│   │   ├── main.rs             # clap: run / sweep / reproduce
 │   │   ├── lib.rs
 │   │   ├── config.rs           # Config, CustomerMode, LLM settings, seed derivation
 │   │   ├── world.rs            # MarketWorld (WorldState), Firm, Customer, Dish, Market
@@ -20,13 +20,17 @@ replications/zhao2024/
 │   │   ├── llm.rs              # socsim-llm builder (Ollama→OpenAI + cache)
 │   │   ├── prompts.rs          # firm-strategy / customer-choice prompts + response parsing
 │   │   ├── metrics.rs          # revenue Gini / market share / WTA / dish score / menu similarity
-│   │   └── simulation.rs       # init_world + run drivers + output writers
+│   │   ├── record.rs           # runvault recording: daily aggregates, observation/terminal events, LLM block
+│   │   ├── reproduce_mock.rs   # scripted client wiring for `reproduce --mock`
+│   │   └── simulation.rs       # init_world + run drivers (returns SimulationResult; writes no files)
 │   └── tests/integration_test.rs   # mock-driven (ScriptedClient); no live LLM
 ├── tools/                      # Python package `competeai-tools` (module `competeai_tools`)
 │   └── src/competeai_tools/
 │       ├── cli.py
-│       ├── visualize.py        # market share + revenue Gini + dish score + menu similarity
-│       ├── visualize_sweep.py  # store-count × customer-count WTA frequency / final Gini
+│       ├── visualize.py        # market share + revenue Gini + dish score + menu similarity (from a run's events.jsonl/metrics.csv)
+│       ├── visualize_sweep.py  # store-count × customer-count WTA frequency / final Gini (rebuilds the sweep table from child runs)
+│       ├── sweep_summary.py    # rebuilds the "one row per cell×trial" sweep table from a sweep parent's child runs
+│       ├── reproduce_paper.py  # reads a `reproduce` parent's scope=sweep metrics + reference.csv, prints the diff, renders figures
 │       └── show_experiment_settings.py
 └── docs/                       # bilingual (.md + .ja.md)
 ```
@@ -61,9 +65,22 @@ The synchronous daily step (1 engine tick = 1 day) runs the six phases in order;
 
 The LLM client and the call-metadata collector are shared with the two `Decision` mechanisms via `Rc<RefCell<…>>` (the li2024 pattern); the run driver uses them afterwards to persist the cache and aggregate the cache-hit rate. Firm offers are snapshotted at the end of the firm `Decision` and passed to `Interaction` through the step-scoped `scratch`, so within-day state changes do not leak into other agents' same-day decisions.
 
+## Output layout (runvault)
+
+One subcommand invocation is one [runvault](https://github.com/akitenkrad/rs-runvault) run: a directory `<results-root>/competeai/<subcommand>_<timestamp>_<config_hash>_<execution_hash>/` holding `run.json`, `config.json` (an envelope whose `parameters` block holds the conditions), `metrics.csv`, `events.jsonl`, `status.json`, `manifest.csv`, and — for `reproduce` — `reference.csv`. runvault owns the naming and identity of the output directory, so this crate creates no timestamped directories or `latest` symlink of its own; `--output-dir` is the runvault results root (default `results`). `sweep` and `reproduce` are a parent run plus one child run per trial, linked by `lineage.parent_run_uid` (see [CLI](cli.md)).
+
 ## Metrics
 
-`metrics.csv` is **long-format**: one row per (day, firm). Per-firm columns (`day_customers`, `day_revenue`, `cumulative_revenue`, `avg_dish_score`, `avg_price`, `reputation`, `firm_alive`) vary by firm; daily aggregates (`revenue_gini`, `market_share_max`, `menu_similarity`, `n_alive_firms`) repeat across the rows of one day.
+runvault's `metrics.csv` is `run_uid,step,step_unit,scope,name,value` and has no column for a series id, so the (day, firm) panel cannot live there — every firm's row for a day would collide on the primary key `(name, step, step_unit, scope)`. `crate::record` therefore splits the numbers by grain:
+
+| Where | Grain | Fields |
+|---|---|---|
+| `events.jsonl`, kind `observation` | one row per (day, firm) | `unit_id=firm-<id>`, `t`=day, `t_unit=round`, `firm`, `day_customers`, `day_revenue`, `cumulative_revenue`, `avg_dish_score`, `avg_price`, `reputation` |
+| `metrics.csv`, `scope=run`, per day | identical across firms | `revenue_gini`, `market_share_max`, `menu_similarity`, `n_alive_firms` |
+| `metrics.csv`, `scope=run`, no step | one value per run | `n_units`, `final_day`, `winner_take_all` (0/1), `quality_improved` (0/1), `llm_calls`, `llm_cache_hits`, `llm_cache_hit_rate` (omitted when there were no calls — a rate over zero calls is undefined, not zero) |
+| `events.jsonl`, kind `terminal` | one row per firm | `outcome` (`survive`/`exit`), `censored` (`true` for survivors), `budget` = last observed day |
+
+`firm_alive` no longer exists as a column: a firm's exit is decided by `ReflectionMechanism` *after* the day's metrics row is written, and stops the run — so on the old long-format `metrics.csv` it was `1` on every row ever written. A firm's fate now lives on its `terminal` event instead.
 
 | Metric | Definition | Paper correspondence |
 |---|---|---|
@@ -74,9 +91,11 @@ The LLM client and the call-metadata collector are shared with the two `Decision
 | `menu_similarity` | Jaccard overlap of menus (dish-name sets) | differentiation/imitation (≈ 36%) |
 | `quality_improved` | at least one firm's mean score rose Day1→last (bool) | quality improvement |
 
-## socsim / socsim-llm
+`sweep`'s and `reproduce`'s cross-condition tables (the old `sweep_summary.csv`) are not written to disk either — `competeai_tools.sweep_summary.sweep_summary_table()` rebuilds the "one row per cell×trial" table on demand from a sweep parent's child runs. `reproduce`'s parent carries the cross-condition aggregates as `scope=sweep` metrics (`wta_freq_individual`, `wta_freq_group`, `quality_freq_all`, `menu_similarity_all`, …) and the paper's own reported values in `reference.csv` (each with a `source`). The ±15pt / ±10pt pass/off band is this replication's own choice, not the paper's, so it is **not** recorded — it stays in the `competeai reproduce` console output.
 
-The crate depends only on `socsim-core` (the `WorldState` / `Mechanism` / `Phase` / `SimClock` / `SimRng` primitives) and `socsim-engine` (the `SimulationBuilder`, `RandomActivationScheduler`, `run_observed`), plus `socsim-llm` with `features = ["live"]` for the Ollama + OpenAI backends behind a `FallbackClient`. The production client type is `CachingClient<Box<dyn LlmClient>>`: the `FallbackClient<OllamaClient, OpenAiClient>` is type-erased into `Box<dyn LlmClient>` using `socsim-llm`'s `impl LlmClient for Box<T>` (issue #26), so no local newtype is needed and the same `CompeteClient` accepts a `mock::ScriptedClient` in tests. The git dependencies are pinned to a concrete commit in `Cargo.lock`.
+## socsim / socsim-llm / runvault
+
+The crate depends only on `socsim-core` (the `WorldState` / `Mechanism` / `Phase` / `SimClock` / `SimRng` primitives) and `socsim-engine` (the `SimulationBuilder`, `RandomActivationScheduler`, `run_observed`), plus `socsim-llm` with `features = ["live"]` for the Ollama + OpenAI backends behind a `FallbackClient`. The production client type is `CachingClient<Box<dyn LlmClient>>`: the `FallbackClient<OllamaClient, OpenAiClient>` is type-erased into `Box<dyn LlmClient>` using `socsim-llm`'s `impl LlmClient for Box<T>` (issue #26), so no local newtype is needed and the same `CompeteClient` accepts a `mock::ScriptedClient` in tests. Output recording is a separate concern from the socsim/`socsim-llm` dependencies: it is owned by [runvault](https://github.com/akitenkrad/rs-runvault) (see [Output layout](#output-layout-runvault) above), which the crate depends on as a fourth git dependency alongside `socsim-core` / `socsim-engine` / `socsim-llm`. The git dependencies are pinned to a concrete commit in `Cargo.lock`.
 
 > The design doc (§4.2/§7) originally listed `reqwest` + `sha2`; this suite supersedes that by standardising on `socsim-llm` (matching li2024 / chuang2024). `socsim-llm` owns the HTTP transport and the `hash(prompt+model)` cache key, so neither `reqwest` nor `sha2` appears in this crate.
 

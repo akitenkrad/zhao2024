@@ -93,8 +93,6 @@ pub struct Config {
     pub seed: Option<u64>,
     /// LLM レイヤ設定．
     pub llm: LlmSettings,
-    /// 結果出力ディレクトリ．
-    pub output_dir: String,
 }
 
 impl Default for Config {
@@ -113,7 +111,6 @@ impl Default for Config {
             customer_income: 8_000.0,
             seed: Some(42),
             llm: LlmSettings::default(),
-            output_dir: "results".to_string(),
         }
     }
 }
@@ -126,10 +123,13 @@ pub fn derive_run_seed(base: u64, run_idx: usize) -> u64 {
     socsim_core::derive_seed(base, &[run_idx as u64])
 }
 
-/// `config.json` (run 用) のシリアライズ表現．
+/// runvault の `config.json` に入る `parameters`．
+///
+/// «どのサブコマンドか» と «どこへ書いたか» はここには無い — 前者は `run.json` の
+/// `subcommand` が，後者は run ディレクトリそのものが持つ．同じ条件なら `run` でも
+/// 掃引の子でも同じ `config_hash` になるようにするため，条件だけを並べる．
 #[derive(Serialize)]
 pub struct RunConfigJson {
-    pub command: &'static str,
     pub n_firms: usize,
     pub n_customers: usize,
     pub customer_mode: String,
@@ -144,14 +144,12 @@ pub struct RunConfigJson {
     pub seed: Option<u64>,
     pub llm_temperature: f32,
     pub llm_seed: u64,
-    pub output_dir: String,
 }
 
 impl Config {
     /// `config.json` 用の表現を組み立てる．
     pub fn to_run_config_json(&self) -> RunConfigJson {
         RunConfigJson {
-            command: "run",
             n_firms: self.n_firms,
             n_customers: self.n_customers,
             customer_mode: self.customer_mode.label().to_string(),
@@ -166,7 +164,6 @@ impl Config {
             seed: self.seed,
             llm_temperature: self.llm.temperature,
             llm_seed: self.llm.seed,
-            output_dir: self.output_dir.clone(),
         }
     }
 }

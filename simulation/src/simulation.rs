@@ -6,22 +6,25 @@
 //!   (= 活性化順・グループ多数決の同点処理) を派生する．bit 単位で再現する．
 //! - **上層 (非決定的 LLM レイヤ)**: [`crate::llm`] のキャッシュ付き
 //!   Ollama→OpenAI フォールバッククライアントに閉じ込め，`temperature=0`/`seed`
-//!   固定 + プロンプト→応答キャッシュで擬似決定論化する．モデル・endpoint・
-//!   温度・seed・cache-hit を `run_metadata.json` に記録する．
+//!   固定 + プロンプト→応答キャッシュで擬似決定論化する．モデル・endpoint・温度は
+//!   `run.json` の `llm` ブロックへ，呼び出し数と cache-hit は run スコープの指標へ
+//!   runvault が落とす (`crate::record`)．
+//!
+//! 出力の置き場と同一性は runvault が持つ．このモジュールは «計算した結果» を
+//! [`SimulationResult`] で返すだけで，ファイルは 1 つも書かない．
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use rand::Rng;
-use serde::Serialize;
 
 use socsim_core::{derive_seed, AgentId, SimClock, SimRng};
 use socsim_engine::{RandomActivationScheduler, SimulationBuilder};
 use socsim_llm::{LlmClient, MetadataCollector};
 
 use crate::config::{Config, CustomerMode};
-use crate::llm::{build_live_client, CompeteClient};
+use crate::llm::CompeteClient;
 use crate::mechanisms::{
     CompetitionMatthewMechanism, CustomerChoiceMechanism, MarketResetMechanism, PatronageMechanism,
     ReflectionMechanism, RevenueRewardMechanism, SharedClient, SharedMetadata, SharedMetrics,
@@ -61,6 +64,22 @@ const DISH_NAMES: [&str; 8] = [
     "sushi", "ramen", "tempura", "curry", "udon", "gyoza", "yakitori", "donburi",
 ];
 
+/// 店舗 1 軒の終端での帰趨．
+///
+/// `terminal` イベントを書くのに要る．撤退の判定は日次指標を書いた後の
+/// [`ReflectionMechanism`] が行うので，`metrics_history` の `firm_alive` からは
+/// «どの店舗が潰れたか» が読めない (書き出された行はすべて生存中である)．終わった
+/// 世界そのものから採る．
+#[derive(Debug, Clone)]
+pub struct FirmOutcome {
+    /// 店舗 `AgentId` の生 `u64`．
+    pub firm: u64,
+    /// 終了時点で営業していたか．
+    pub alive: bool,
+    /// 終了時点の資金 (負なら撤退した)．
+    pub funds: f64,
+}
+
 /// シミュレーション全体の実行結果．
 pub struct SimulationResult {
     /// 日次指標の履歴 (metrics.csv の行; long-format)．
@@ -77,6 +96,8 @@ pub struct SimulationResult {
     pub winner_take_all: bool,
     /// 少なくとも一方の店舗の平均スコアが Day1→最終日で上昇したか．
     pub quality_improved: bool,
+    /// 店舗ごとの終端での帰趨 (`AgentId` 昇順)．
+    pub firm_outcomes: Vec<FirmOutcome>,
 }
 
 /// 世界状態を初期化する (店舗生成 + 顧客生成 + 空の市場)．
@@ -129,31 +150,6 @@ pub fn init_world(cfg: &Config, rng: &mut SimRng) -> MarketWorld {
         market: Market::default(),
         day: 0,
     }
-}
-
-/// シミュレーションを実行する (本番 LLM クライアントを構築して駆動)．
-///
-/// `OLLAMA_*` / `OPENAI_*` 環境変数から «Ollama 第一 → OpenAI フォールバック +
-/// キャッシュ» クライアントを構築し，[`run_with_client`] へ委譲する．
-pub fn run(cfg: &Config) -> Result<SimulationResult, String> {
-    let client =
-        build_live_client(&cfg.llm).map_err(|e| format!("LLM クライアント構築に失敗: {e}"))?;
-    run_with_client(cfg, client)
-}
-
-/// オフライン (LLM 不要) の決定論的 mock でシミュレーションを実行する．
-///
-/// [`crate::reproduce_mock::build_reproduce_client`] の scripted クライアント
-/// (in-memory cache) で駆動する．`reproduce --mock` / `run --mock` から使い，
-/// ライブ LLM 無しで論文の定性的挙動 (品質改善・マタイ効果・グループ緩和) を
-/// 構造的に再現する．mock は in-memory cache なので永続キャッシュ保存はスキップ
-/// される (`cfg.llm.cache_path` は無視扱い)．
-pub fn run_mock(cfg: &Config) -> Result<SimulationResult, String> {
-    // mock は永続キャッシュを持たないため，誤って save() を呼ばないよう cache_path
-    // を落とした設定で駆動する (in-memory cache は save() が no-op だが明示的に倒す)．
-    let mut mock_cfg = cfg.clone();
-    mock_cfg.llm.cache_path = None;
-    run_with_client(&mock_cfg, crate::reproduce_mock::build_reproduce_client())
 }
 
 /// 与えられた [`CompeteClient`] でシミュレーションを実行する．
@@ -219,6 +215,18 @@ pub fn run_with_client(cfg: &Config, client: CompeteClient) -> Result<Simulation
             .map_err(|e| format!("キャッシュ保存に失敗: {e}"))?;
     }
 
+    // 終わった世界から店舗の帰趨を採る (`terminal` イベントの材料)．
+    let firm_outcomes: Vec<FirmOutcome> = sim
+        .world()
+        .firms
+        .iter()
+        .map(|(id, f)| FirmOutcome {
+            firm: id.0,
+            alive: f.alive,
+            funds: f.funds,
+        })
+        .collect();
+
     let metrics_history = shared_metrics.borrow().clone();
     let metadata = shared_meta.borrow().clone();
 
@@ -233,6 +241,7 @@ pub fn run_with_client(cfg: &Config, client: CompeteClient) -> Result<Simulation
         final_day,
         winner_take_all: wta,
         quality_improved,
+        firm_outcomes,
     })
 }
 
@@ -261,64 +270,6 @@ fn compute_quality_improved(metrics: &[DailyMetric]) -> bool {
     first
         .iter()
         .any(|(firm, &s0)| last.get(firm).map(|&s1| s1 > s0 + 1e-9).unwrap_or(false))
-}
-
-/// 日次指標を CSV に保存する (long-format; 1 行 = 1 日 1 店舗)．
-///
-/// 書き出し機構は `socsim_results::write_csv` に委譲する (各行を `serialize` し
-/// 先頭行にヘッダを書く csv クレットの標準挙動; 従来の手書き writer とバイト等価)．
-/// 行構造体 [`DailyMetric`] は repo 固有のままで，writer だけを共有化する．
-pub fn save_metrics(metrics: &[DailyMetric], output_dir: &str) {
-    let path = format!("{}/metrics.csv", output_dir);
-    socsim_results::write_csv(metrics, &path).expect("metrics.csv の書き込みに失敗");
-}
-
-/// `run_metadata.json` の構造体 (LLM モデル・endpoint・温度・seed・cache 統計)．
-#[derive(Serialize)]
-pub struct RunMetadataJson {
-    pub llm_model: String,
-    pub llm_endpoint: String,
-    pub llm_temperature: f32,
-    pub llm_seed: u64,
-    pub total_calls: usize,
-    pub cache_hits: usize,
-    pub cache_hit_rate: f64,
-    pub winner_take_all: bool,
-    pub quality_improved: bool,
-    pub determinism_note: &'static str,
-}
-
-/// `run_metadata.json` を保存する．
-pub fn save_run_metadata(result: &SimulationResult, cfg: &Config, output_dir: &str) {
-    let meta = RunMetadataJson {
-        llm_model: result.llm_model.clone(),
-        llm_endpoint: result.llm_endpoint.clone(),
-        llm_temperature: cfg.llm.temperature,
-        llm_seed: cfg.llm.seed,
-        total_calls: result.metadata.total(),
-        cache_hits: result.metadata.cache_hits(),
-        cache_hit_rate: result.metadata.cache_hit_rate(),
-        winner_take_all: result.winner_take_all,
-        quality_improved: result.quality_improved,
-        determinism_note: "LLM output is outside socsim bit-reproducibility; the prompt->response \
-                           cache (with temperature=0 and fixed seed) is the reproducibility \
-                           mechanism. The socsim core (world init, activation order, group \
-                           majority tie-breaking, market matching, revenue/Gini/share metrics) is \
-                           deterministic given the seed.",
-    };
-    // pretty-print JSON の書き出しは socsim_results::write_json に委譲する
-    // (内部は serde_json::to_writer_pretty + flush; 従来の writer とバイト等価)．
-    // model/endpoint/temperature/seed/WTA/品質改善の値は従来どおり result / cfg
-    // から採り，RunMetadataJson の構造 (フィールド名・順序・determinism_note) を
-    // 保持する (`MetadataCollector::summary()` は cache-hit 100% 再実行や呼び出し
-    // 0 件で endpoint/model が変わりうるため，バイト等価のためここでは使わない)．
-    let path = format!("{}/run_metadata.json", output_dir);
-    socsim_results::write_json(&meta, &path).expect("run_metadata.json の書き込みに失敗");
-}
-
-/// 出力ディレクトリを作成する．
-pub fn ensure_output_dir(output_dir: &str) {
-    socsim_results::ensure_dir(output_dir).expect("出力ディレクトリの作成に失敗");
 }
 
 /// 日次指標から最大市場シェアの系列を抽出する (1 日 1 値; ヘルパ)．

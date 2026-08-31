@@ -2,13 +2,18 @@
 """
 visualize_sweep.py — Zhao et al. (2024) CompeteAI スイープ結果 可視化スクリプト
 
-results/latest (または --sweep_dir 指定先) の sweep_summary.csv を読み，
-店舗数 M × 顧客数 N の格子について，勝者総取り発生頻度・最終収益 Gini・
-品質改善頻度を集計し，棒グラフ/ヒートマップで可視化する (マタイ効果の創発条件)．
+sweep 親 run の子 run を集めて «1 行 1 (セル × 試行)» の表を組み直し，店舗数 M ×
+顧客数 N の格子について勝者総取り発生頻度・最終収益 Gini を棒グラフ/ヒートマップで
+可視化する (マタイ効果の創発条件)．掃引の表はディスクに無い — 同じ値は子 run の
+`metrics.csv` と `config.json` にあるので，`sweep_summary` が組み直す．
+
+`--sweep-dir` を省略すると
+`runvault path --experiment competeai --latest --subcommand sweep`
+が返す親 run を対象にする (`runvault` が PATH にある必要がある)．
 
 Usage:
     uv run competeai-tools visualize-sweep
-    uv run competeai-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+    uv run competeai-tools visualize-sweep --sweep-dir "$(runvault path --experiment competeai --latest --subcommand sweep)"
 
 Outputs:
     output_dir/
@@ -24,18 +29,16 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from runvault.read import figures_dir, runvault_path
+
+from competeai_tools.sweep_summary import sweep_summary_table
+
+# runvault の experiment 名 (Rust 側 record::EXPERIMENT と揃える)．
+EXPERIMENT = "competeai"
 
 plt.rcParams["font.family"] = "Hiragino Sans"
 
 COLOR_BG = "#FAFAF8"
-
-
-def load_summary(sweep_dir: str) -> pd.DataFrame:
-    """sweep_summary.csv を読み込む．"""
-    path = os.path.join(sweep_dir, "sweep_summary.csv")
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"sweep_summary.csv が見つかりません: {path}")
-    return pd.read_csv(path)
 
 
 def save_wta_by_nfirms(df: pd.DataFrame, out_path: str) -> None:
@@ -116,16 +119,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Zhao et al. (2024) CompeteAI スイープ結果 可視化スクリプト",
     )
     p.add_argument(
-        "--sweep_dir",
         "--sweep-dir",
-        default="results/latest",
-        help="スイープ出力ディレクトリ (default: results/latest)",
+        "--sweep_dir",
+        default=None,
+        help="sweep 親 run のディレクトリ (省略時は runvault path が返す直近の sweep)",
     )
     p.add_argument(
-        "--output_dir",
+        "--results-root",
+        "--results_root",
+        default="results",
+        help="runvault の results ルート (default: results)",
+    )
+    p.add_argument(
         "--output-dir",
+        "--output_dir",
         default=None,
-        help="図の保存先ディレクトリ (default: {sweep_dir}/figures)",
+        help="図の保存先ディレクトリ (default: <results-root>/competeai/figures/<run_slug>)",
     )
     return p.parse_args(argv)
 
@@ -133,16 +142,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
 
-    out_dir = args.output_dir if args.output_dir else os.path.join(args.sweep_dir, "figures")
+    sweep_dir = args.sweep_dir or runvault_path(
+        EXPERIMENT,
+        results_root=args.results_root,
+        subcommand="sweep",
+    )
+    out_dir = args.output_dir or figures_dir(sweep_dir)
     os.makedirs(out_dir, exist_ok=True)
 
     print("=== Zhao et al. (2024) CompeteAI スイープ可視化 ===")
-    print(f"スイープ: {args.sweep_dir}")
+    print(f"スイープ: {sweep_dir}")
     print(f"出力先:   {out_dir}")
     print("-------------------------------------------------")
 
-    print("[1/2] sweep_summary.csv を読み込み中 ...")
-    df = load_summary(args.sweep_dir)
+    print("[1/2] 子 run からスイープ表を組み直し中 ...")
+    df = sweep_summary_table(sweep_dir)
     print(
         f"      M {df['n_firms'].nunique()} 種 × N {df['n_customers'].nunique()} 種 "
         f"(計 {len(df)} 実行)"

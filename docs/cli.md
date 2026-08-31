@@ -40,9 +40,9 @@ cargo run --release -- run \
 | `--llm-seed` | 0 | backend generation seed |
 | `--cache-path` | `.llm_cache/cache.json` | prompt→response cache file |
 | `--mock` | off | drive offline with a deterministic scripted mock (no live LLM) |
-| `--output-dir` | `results` | output base directory |
+| `--output-dir` | `results` | runvault results root |
 
-Outputs into `results/{timestamp}/`: `config.json`, `metrics.csv` (long-format, one row per day×firm), `run_metadata.json` (LLM model/endpoint/temperature/seed/cache-hit + winner_take_all + quality_improved). A `results/latest` symlink points at the newest run. When `--runs > 1`, the console prints the winner-take-all and quality-improvement frequencies across trials.
+Writes one [runvault](https://github.com/akitenkrad/rs-runvault) run under `<output-dir>/competeai/run_<timestamp>_<config_hash>_<execution_hash>/`: `config.json` (the conditions, under `parameters`), `run.json` (including the `llm` block — model/endpoint/temperature), `metrics.csv` (per-day aggregates — `revenue_gini`/`market_share_max`/`menu_similarity`/`n_alive_firms` — plus run-scope values — `llm_calls`/`llm_cache_hits`/`llm_cache_hit_rate`/`winner_take_all`/`quality_improved`), `events.jsonl` (a per-firm `observation` row for every day, plus one `terminal` row per firm recording its outcome), `status.json` and `manifest.csv`. When `--runs > 1`, only the last trial is recorded to disk (see the `--runs` note above); the console still prints the winner-take-all and quality-improvement frequencies across all trials.
 
 ## `sweep`
 
@@ -64,9 +64,9 @@ cargo run --release -- sweep \
 | `--runs` | 5 | trials per cell (each derived seed) |
 | `--seed` | 42 | base seed (cells/trials derive from it) |
 | `--cache-path` | `.llm_cache/cache.json` | shared cache (raises hit rate across cells) |
-| `--output-dir` | `results` | output base directory |
+| `--output-dir` | `results` | runvault results root |
 
-Outputs into `results/{timestamp}_sweep/`: `sweep_config.json` and `sweep_summary.csv` (one row per cell×trial: final revenue Gini, final market share, winner_take_all, quality_improved, final menu similarity, surviving firms, cache-hit rate). `results/latest` points at the sweep directory.
+Writes a runvault **parent** run under `<output-dir>/competeai/sweep_<timestamp>_<config_hash>_<execution_hash>/` whose `config.json` `parameters` hold the sweep grid (`n_firms_values`, `n_customers_values`, …); the parent has no per-cell metrics. Each (store count × customer count × trial) cell is its own **child** run — same layout as `run` above — linked to the parent via `lineage.parent_run_uid`. There is no `sweep_summary.csv` on disk: `uv run competeai-tools visualize-sweep` rebuilds the one-row-per-cell×trial table from the children on demand (see [Visualization](visualization.md)).
 
 ## `reproduce`
 
@@ -93,9 +93,9 @@ cargo run --release -- reproduce --seed 42
 | `--llm-seed` | 0 | backend generation seed (live only) |
 | `--cache-path` | `.llm_cache/cache.json` | shared cache (live only) |
 | `--quick` | off | shrink N / trials / days for a fast smoke (not for validating paper values) |
-| `--output-dir` | `results` | output base directory |
+| `--output-dir` | `results` | runvault results root |
 
-Outputs into `results/reproduce_{timestamp}/`: `reproduce_summary.json` (per-condition cells + Table 2 anchors with observed-vs-paper and pass/off), and `metrics_individual.csv` / `metrics_group.csv` (the representative trial of each condition). `results/latest` points at the reproduce directory. The anchors are: the individual winner-take-all frequency (paper 66.7%), the group winner-take-all frequency (paper 16.7%), the directional individual > group attenuation, the quality-improvement frequency (paper 86.67%), and the menu similarity (paper ≈ 36%; reported as a structural reference, since this Phase holds menu items fixed). The Python `competeai-tools reproduce` renders the figures.
+Writes a runvault **parent** run under `<output-dir>/competeai/reproduce_<timestamp>_<config_hash>_<execution_hash>/` with one **child** run per trial (individual and group), linked via `lineage.parent_run_uid`. The parent's `metrics.csv` carries the cross-condition aggregates as `scope=sweep` metrics — `wta_freq_individual`, `wta_freq_group`, `quality_freq_individual`, `quality_freq_group`, `quality_freq_all`, `menu_similarity_individual`, `menu_similarity_group`, `menu_similarity_all`, `final_gini_individual`, `final_gini_group`, `final_share_max_individual`, `final_share_max_group`, and the directional `wta_freq_gap_individual_minus_group` — and the parent's `reference.csv` carries the paper's own Table 2 / §4 values (individual winner-take-all 66.7%, group winner-take-all 16.7%, quality improvement 86.67%, menu similarity ≈ 36%; each row has a `source`). The ±15pt / ±10pt pass/off band is this replication's own choice, not the paper's, so it is **not** recorded in any file — it appears only in the `competeai reproduce` console output. The Python `competeai-tools reproduce` renders the figures from the parent's metrics and `reference.csv`.
 
 ---
 *This file was generated by Claude Code.*

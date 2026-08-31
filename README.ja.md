@@ -11,7 +11,7 @@ LLM 出力は socsim の bit 再現性の **外側** にある．したがって
 - **決定論的 socsim コア** — 店舗/顧客の初期化 (資金・所得・嗜好)・活性化順・グループ多数決の同点処理・顧客−店舗の市場マッチング・財務会計 (収益・原価・資金)・全指標 (収益 Gini・市場シェア集中・勝者総取り・料理スコア・メニュー類似度)．seed が決まれば bit 単位で再現する (`ctx.rng`, ChaCha20 `SimRng`)．
 - **非決定的 LLM レイヤ** — 2 つの `Decision` メカニズム: 店舗戦略の反省 (`CompetitionMatthewMechanism`) と顧客選択 (`CustomerChoiceMechanism`)．`socsim-llm` の `CachingClient` (`hash(prompt+model)` → 応答キャッシュ)・`temperature=0`・固定 seed で擬似決定論化する．プロバイダ順序は `socsim-llm` の `FallbackClient` による **Ollama 第一 → OpenAI フォールバック**．
 
-再現性の本体はモデルではなく **キャッシュ** である: ウォームキャッシュは同一応答を再生するので，再実行は無料かつ安定する．各実行は `run_metadata.json` にモデル・endpoint・温度・seed・cache-hit 率を記録する．ローカル既定モデル (`llama3.2`) は論文の `gpt-4` と異なるため，再現目標は **定性的** とする: マタイ効果 / 市場集中の傾向，勝者総取りの発生，品質改善の発生であり，論文の厳密な発生頻度 (勝者総取り 個人 66.7% / グループ 16.7%，品質改善 86.67%，メニュー類似度 約36%) の一致は求めない．`reproduce` サブコマンドが個人客・グループ客の試行を一括実行し，観測された発生頻度を論文 Table 2 と方向性のある合否バンドで突き合わせる ([CLI](docs/cli.ja.md) を参照)．
+再現性の本体はモデルではなく **キャッシュ** である: ウォームキャッシュは同一応答を再生するので，再実行は無料かつ安定する．各実行は [runvault](https://github.com/akitenkrad/rs-runvault) が記録する: モデル・endpoint・温度は run の `run.json` の `llm` ブロックへ，呼び出し数と cache-hit 率は `metrics.csv` の run スコープ指標へ入る．ローカル既定モデル (`llama3.2`) は論文の `gpt-4` と異なるため，再現目標は **定性的** とする: マタイ効果 / 市場集中の傾向，勝者総取りの発生，品質改善の発生であり，論文の厳密な発生頻度 (勝者総取り 個人 66.7% / グループ 16.7%，品質改善 86.67%，メニュー類似度 約36%) の一致は求めない．`reproduce` サブコマンドは個人客・グループ客の試行を親 run 1 本 + 試行ごとの子 run として一括実行し，観測された発生頻度を親の `scope=sweep` 指標として集計したうえで，論文 Table 2 の値 (`reference.csv` に記録) と方向性のある合否バンドで突き合わせて表示する (バンドそのものはコンソール限りで記録しない; [CLI](docs/cli.ja.md) を参照)．
 
 > 本プロジェクトは LLM レイヤを `socsim-llm` クレットに標準化しており，`reqwest` / `sha2` は使わない (HTTP とプロンプトキャッシュのハッシュは socsim-llm が所有する)．空間格子・網モデル (`socsim-grid` / `socsim-net`) は不要で，相互作用は市場媒介であるため `socsim-core` + `socsim-engine` + `socsim-llm` のみに依存する．
 
@@ -40,8 +40,8 @@ uv sync
 # 直近実行の可視化 (市場シェア・収益 Gini・料理スコア・メニュー類似度)
 uv run competeai-tools visualize
 
-# 実行設定と LLM メタデータの確認
-uv run competeai-tools show-experiment-settings --results-dir results/latest
+# 実行設定と LLM メタデータの確認 (既定は `runvault path` が返す直近実行)
+uv run competeai-tools show-experiment-settings
 ```
 
 ### オフライン (LLM 不要) スモーク
@@ -65,7 +65,7 @@ uv run competeai-tools visualize-sweep
 
 ### 論文 Table 2 の発生頻度を再現する
 
-`reproduce` は個人客と グループ客の試行を一括実行し，観測された発生頻度 (勝者総取り・品質改善・メニュー類似度) を論文 Table 2 と合否バンドで突き合わせ，`reproduce_summary.json` と条件別メトリクスを書き出す．付随する Python ツールが発生頻度・マタイ効果・シェア推移の図を描く．
+`reproduce` は個人客とグループ客の試行を親 run 1 本 + 試行ごとの子 run として一括実行し，観測された発生頻度 (勝者総取り・品質改善・メニュー類似度) を親の `scope=sweep` 指標として集計したうえで，論文 Table 2 の値を `reference.csv` に書き出す (合否バンド自体はコンソール限りで記録しない)．付随する Python ツールが発生頻度・マタイ効果・シェア推移の図を描く．
 
 ```bash
 # オフライン (scripted mock) 一括再現 + 図

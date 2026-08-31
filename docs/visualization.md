@@ -6,53 +6,59 @@ The Python package `competeai-tools` (module `competeai_tools`) reads the Rust o
 
 ## `visualize`
 
-Reads `results/latest/metrics.csv` (long-format) and writes one 2×2 figure, `competition_dynamics.png`:
+Reads a run's day×firm panel from `events.jsonl` (the `observation` events) and the per-day aggregates from `metrics.csv`, and writes one 2×2 figure, `competition_dynamics.png`. Figures are written *outside* the run, under `<results-root>/competeai/figures/<run_slug>/` — a run's `manifest.csv` is sealed by `finish()`, so nothing written afterwards can go inside the run directory:
 
 - **Market share over days** — each firm's daily customer share (%), with the 80% winner-take-all line.
 - **Revenue Gini over days** — cumulative-revenue Gini; a rising trend is the Matthew effect.
 - **Average dish score per firm over days** — `s = 0.5·c/p + 0.5·f/5000`; a rising trend is quality improvement.
 - **Menu similarity over days** — Jaccard overlap of menus, with the paper's ≈ 36% dynamic-equilibrium reference line.
 
+`--results-dir` defaults to `runvault path --experiment competeai --latest --subcommand run --standalone` (`--standalone` because a `sweep`/`reproduce` child run is also `subcommand=run`).
+
 ```bash
 uv run competeai-tools visualize
-uv run competeai-tools visualize --results_dir results/20260524_153000 --output_dir out
+uv run competeai-tools visualize --results-dir "$(runvault path --experiment competeai --latest --subcommand run --standalone)"
+uv run competeai-tools visualize --output-dir out
 ```
 
 ## `visualize-sweep`
 
-Reads `sweep_summary.csv` and writes:
+There is no `sweep_summary.csv` on disk: `competeai_tools.sweep_summary.sweep_summary_table()` rebuilds the one-row-per-cell×trial table from a sweep parent's child runs (each child's `config.json`, `run.json` and `metrics.csv`), then writes:
 
 - `sweep_wta_by_nfirms.png` — winner-take-all frequency (%) and mean final revenue Gini, by store count M.
 - `sweep_gini_heatmap.png` — final revenue Gini over the (M × N) grid (only when both M and N vary).
 
+`--sweep-dir` defaults to `runvault path --experiment competeai --latest --subcommand sweep`.
+
 ```bash
 uv run competeai-tools visualize-sweep
-uv run competeai-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+uv run competeai-tools visualize-sweep --sweep-dir "$(runvault path --experiment competeai --latest --subcommand sweep)"
 ```
 
 ## `reproduce`
 
-Reads `reproduce_summary.json` (and the per-condition `metrics_individual.csv` / `metrics_group.csv`) written by `competeai reproduce`, prints the observed-vs-paper anchor table (pass/off), and writes three figures:
+Reads the `reproduce` parent run written by `competeai reproduce`: the cross-condition aggregates from its `metrics.csv` `scope=sweep` rows, and the paper's Table 2 / §4 values from its `reference.csv`. Prints the observed-vs-paper differences — not a pass/off table, since the band is this replication's own choice and lives only in the Rust binary's console output, never duplicated into two languages here — and writes three figures:
 
 - `occurrence_frequency.png` — winner-take-all and quality-improvement frequencies for individual vs group customers, with the paper's Table 2 reference lines (66.7% / 16.7% / 86.67%).
 - `matthew_effect.png` — final revenue Gini and final max market share per condition (market-concentration strength).
-- `share_trajectory.png` — the representative run's max-market-share time series, individual vs group.
+- `share_trajectory.png` — the representative child run's (replicate 0) max-market-share time series, individual vs group, read from its `metrics.csv`.
 
-`--run` first executes the Rust binary; add `--mock` (and optionally `--quick`) for an offline batch.
+`--run` first executes the Rust binary (`cargo run --release -- reproduce`); add `--mock` (and optionally `--quick`) for an offline batch.
 
 ```bash
 uv run competeai-tools reproduce --run --mock        # offline batch + figures
-uv run competeai-tools reproduce                       # visualize existing results/latest
+uv run competeai-tools reproduce                       # visualize the latest existing reproduce run
 uv run competeai-tools reproduce --json                # machine-readable summary
 ```
 
 ## `show-experiment-settings`
 
-Pretty-prints `config.json` (run) or `sweep_config.json` (sweep) plus, if present, the LLM `run_metadata.json` (model, endpoint, temperature, seed, cache-hit rate, winner_take_all, quality_improved). `results/latest` is resolved through the symlink. `--json` emits machine-readable output.
+Pretty-prints a run's `config.json` `parameters` — this works for a plain `run`, a `sweep` parent, or a `reproduce` parent alike; which kind it is comes from `run.json`'s `subcommand`, not from separate files — plus the `run.json` `llm` block (provider, model, temperature), the run-scope metrics from `metrics.csv` (call count, cache-hit rate, `winner_take_all`, `quality_improved`), and, for a `reproduce` parent, its `scope=sweep` cross-condition metrics. `--results-dir` defaults to the latest `run` via `runvault path`. `--json` emits machine-readable output.
 
 ```bash
-uv run competeai-tools show-experiment-settings --results-dir results/latest
-uv run competeai-tools show-experiment-settings --results-dir results/latest --json
+uv run competeai-tools show-experiment-settings
+uv run competeai-tools show-experiment-settings --results-dir "$(runvault path --experiment competeai --latest --subcommand sweep)"
+uv run competeai-tools show-experiment-settings --json
 ```
 
 ## Interpreting the results

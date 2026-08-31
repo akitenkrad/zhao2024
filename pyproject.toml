@@ -11,3 +11,6 @@ members = ["tools"]
 
 [tool.uv.sources]
 competeai-tools = { workspace = true }
+# run ディレクトリの読み書きの正本は rs-runvault にある．path 依存にすると
+# 開発機のディレクトリ配置に縛られるので git 依存にする．
+runvault = { git = "https://github.com/akitenkrad/rs-runvault", subdirectory = "python" }

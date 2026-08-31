@@ -6,53 +6,59 @@ Python パッケージ `competeai-tools` (モジュール `competeai_tools`) は
 
 ## `visualize`
 
-`results/latest/metrics.csv` (long-format) を読み，2×2 の図 `competition_dynamics.png` を書き出す:
+run の (日, 店舗) パネルを `events.jsonl` の `observation` イベントから，日次集計を `metrics.csv` から読み，2×2 の図 `competition_dynamics.png` を書き出す．図は run の **外** — `<results-root>/competeai/figures/<run_slug>/` — に置く．run の `manifest.csv` は `finish()` で封止されるので，実行後に書くものは run ディレクトリの中に置けない:
 
 - **市場シェア推移** — 各店舗の日次客数シェア (%)．80% 勝者総取り線を併記．
 - **収益 Gini 推移** — 累積収益の Gini．上昇傾向がマタイ効果．
 - **店舗別 平均料理スコア推移** — `s = 0.5·c/p + 0.5·f/5000`．上昇傾向が品質改善．
 - **メニュー類似度推移** — メニューの Jaccard 重なり．論文 約36% 動的均衡の参照線を併記．
 
+`--results-dir` の既定は `runvault path --experiment competeai --latest --subcommand run --standalone` (`--standalone` を付けるのは，掃引/reproduce の子 run も `subcommand=run` だから)．
+
 ```bash
 uv run competeai-tools visualize
-uv run competeai-tools visualize --results_dir results/20260524_153000 --output_dir out
+uv run competeai-tools visualize --results-dir "$(runvault path --experiment competeai --latest --subcommand run --standalone)"
+uv run competeai-tools visualize --output-dir out
 ```
 
 ## `visualize-sweep`
 
-`sweep_summary.csv` を読み，以下を書き出す:
+`sweep_summary.csv` はディスクに無い: `competeai_tools.sweep_summary.sweep_summary_table()` が sweep 親の子 run (各子の `config.json`・`run.json`・`metrics.csv`) から «1 行 1 (セル×試行)» の表をその都度組み直し，以下を書き出す:
 
 - `sweep_wta_by_nfirms.png` — 店舗数 M 別の勝者総取り発生頻度 (%) と平均最終収益 Gini．
 - `sweep_gini_heatmap.png` — (M × N) 格子の最終収益 Gini ヒートマップ (M と N の双方が複数のときのみ)．
 
+`--sweep-dir` の既定は `runvault path --experiment competeai --latest --subcommand sweep`．
+
 ```bash
 uv run competeai-tools visualize-sweep
-uv run competeai-tools visualize-sweep --sweep_dir results/20260524_160000_sweep
+uv run competeai-tools visualize-sweep --sweep-dir "$(runvault path --experiment competeai --latest --subcommand sweep)"
 ```
 
 ## `reproduce`
 
-`competeai reproduce` が書き出す `reproduce_summary.json` (および条件別 `metrics_individual.csv` / `metrics_group.csv`) を読み，観測 vs 論文のアンカー表 (合否) を表示し，3 つの図を書き出す:
+`competeai reproduce` が書く reproduce 親 run を読む: 条件をまたいだ集約はその `metrics.csv` の `scope=sweep` 行から，論文 Table 2 / §4 の値はその `reference.csv` から採る．観測 vs 論文の差を表示する — 合否の帯そのものは本再現実装が置いたものであり Rust バイナリのコンソール出力にしか無いので，ここでは合否表を持たず 2 言語に重複させない．そして 3 つの図を書き出す:
 
 - `occurrence_frequency.png` — 個人客 vs グループ客の勝者総取り・品質改善 発生頻度．論文 Table 2 の参照ライン (66.7% / 16.7% / 86.67%) 付き．
 - `matthew_effect.png` — 条件別の最終収益 Gini・最終最大市場シェア (市場集中の強度)．
-- `share_trajectory.png` — 代表 run の最大市場シェア時系列 (個人客 vs グループ客)．
+- `share_trajectory.png` — 代表子 run (replicate 0) の最大市場シェア時系列 (個人客 vs グループ客)．その `metrics.csv` から読む．
 
-`--run` で先に Rust バイナリを実行する．オフライン一括には `--mock` (必要なら `--quick`) を付ける．
+`--run` で先に Rust バイナリ (`cargo run --release -- reproduce`) を実行する．オフライン一括には `--mock` (必要なら `--quick`) を付ける．
 
 ```bash
 uv run competeai-tools reproduce --run --mock        # オフライン一括 + 図
-uv run competeai-tools reproduce                       # 既存 results/latest を可視化
+uv run competeai-tools reproduce                       # 既存の直近 reproduce を可視化
 uv run competeai-tools reproduce --json                # 機械可読な要約
 ```
 
 ## `show-experiment-settings`
 
-`config.json` (run) または `sweep_config.json` (sweep) を整形表示し，存在すれば LLM の `run_metadata.json` (モデル・endpoint・温度・seed・cache-hit 率・winner_take_all・quality_improved) も併せて表示する．`results/latest` は symlink 経由で解決する．`--json` で機械可読出力．
+run の `config.json` の `parameters` を整形表示する — 単純な `run`・`sweep` 親・`reproduce` 親のいずれでも同じ表示ができ，どの種別かは別ファイルではなく `run.json` の `subcommand` から判る．あわせて `run.json` の `llm` ブロック (provider・モデル・温度)，`metrics.csv` の run スコープ指標 (呼び出し数・cache-hit 率・winner_take_all・quality_improved)，`reproduce` 親であればその `scope=sweep` 指標も表示する．`--results-dir` の既定は `runvault path` が返す直近の `run`．`--json` で機械可読出力．
 
 ```bash
-uv run competeai-tools show-experiment-settings --results-dir results/latest
-uv run competeai-tools show-experiment-settings --results-dir results/latest --json
+uv run competeai-tools show-experiment-settings
+uv run competeai-tools show-experiment-settings --results-dir "$(runvault path --experiment competeai --latest --subcommand sweep)"
+uv run competeai-tools show-experiment-settings --json
 ```
 
 ## 結果の解釈

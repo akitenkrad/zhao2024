@@ -57,7 +57,9 @@ uv run competeai-tools visualize
 ## 6. Inspect a run's settings and LLM metadata
 
 ```bash
-uv run competeai-tools show-experiment-settings --results-dir results/latest
+uv run competeai-tools show-experiment-settings
+# or a specific run:
+uv run competeai-tools show-experiment-settings --results-dir "$(runvault path --experiment competeai --latest --subcommand run --standalone)"
 ```
 
 ## Determinism note
