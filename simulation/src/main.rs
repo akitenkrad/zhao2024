@@ -11,17 +11,20 @@
 //! クトリ・`config.json`・`metrics.csv`・`events.jsonl`) は runvault が持つので，
 //! ここではタイムスタンプ付きディレクトリも `latest` symlink も作らない．
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
 use clap::{Parser, Subcommand};
-use runvault::{Lineage, Run, RunOptions};
+use runvault::{Lineage, Run, RunOptions, Stage};
 
 use competeai_simulation::config::{parse_customer_mode, Config, CustomerMode, LlmSettings};
 use competeai_simulation::llm::{build_live_client, CompeteClient};
+use competeai_simulation::mechanisms::CallObserver;
 use competeai_simulation::metrics::mean;
 use competeai_simulation::record::{self, DOMAIN, EXPERIMENT, REPO_ID, SWEEP_SCOPE};
-use competeai_simulation::simulation::{run_with_client, SimulationResult};
+use competeai_simulation::simulation::{run_with_client_observed, SimulationResult};
 use socsim_llm::LlmClient;
 
 // ---------------------------------------------------------------------------
@@ -283,6 +286,36 @@ fn llm_settings(temperature: f32, seed: u64, cache_path: &str, mock: bool) -> Ll
     }
 }
 
+/// LLM 呼び出しを数える stage を，メカニズムから突ける形にして渡す．
+///
+/// 呼び出しが起きるのは `CompetitionMatthewMechanism` (店舗の戦略立案) と
+/// `CustomerChoiceMechanism` (顧客の来店選択) の中である．メカニズムは
+/// `Box<dyn Mechanism<_>>` としてエンジンへ入る = `'static` なので，呼び出し側の
+/// `Stage` を借用できない — `Rc` で共有し，走り終えたあとに [`close_shared`] で
+/// 取り出して閉じる．
+fn share_stage(stage: Stage) -> (Rc<RefCell<Option<Stage>>>, CallObserver) {
+    let cell = Rc::new(RefCell::new(Some(stage)));
+    let observer: CallObserver = {
+        let cell = Rc::clone(&cell);
+        Rc::new(RefCell::new(move || {
+            if let Some(stage) = cell.borrow_mut().as_mut() {
+                stage.tick();
+            }
+        }))
+    };
+    (cell, observer)
+}
+
+/// 共有していた stage を取り出して閉じる．
+///
+/// `manifest.csv` は `finish()` で封をされる．そのあとに 1 行足せば，manifest が
+/// 食い違うダイジェストを持つことになるので，必ず `finish()` の前に呼ぶ．
+fn close_shared(cell: &Rc<RefCell<Option<Stage>>>) {
+    if let Some(stage) = cell.borrow_mut().take() {
+        stage.close();
+    }
+}
+
 /// カンマ区切り文字列を trim 済みの非空リストへ．
 fn split_csv(s: &str) -> Vec<String> {
     s.split(',')
@@ -389,6 +422,17 @@ fn cmd_run(args: RunArgs) {
     println!("出力先: {}", rv.dir().display());
     println!("-------------------------------------------------");
 
+    // 進捗の単位は «LLM 呼び出し 1 回»．1 日は生存店 1 軒あたり 1 回 + 顧客 1 人
+    // あたり 1 回で，論文標準の M=2 / N=50 なら 52 回になる．ローカルの Ollama
+    // (llama3.2) で既定設定を実測すると 780 回で 6 分 18 秒 = 1 回 0.48 秒 —
+    // 1 日はおよそ 25 秒で，日を数える counter はその間まったく動かない．
+    //
+    // 分母を持たないのは，`ReflectionMechanism` が «最終日» だけでなく «資金が
+    // 尽きた店舗が出た» ときにも `request_stop` を掛けるからである (mechanisms.rs
+    // の `a_firm_exited`)．`days * (M + N) * runs` は到達するとは限らない上限で
+    // あって総数ではなく，上限を分母に据えた ETA は自信をもって間違える．
+    let (stage, observer) = share_stage(rv.unbounded_stage("decisions"));
+
     let mut last_result: Option<SimulationResult> = None;
     let mut wta_count = 0usize;
     let mut quality_count = 0usize;
@@ -404,7 +448,8 @@ fn cmd_run(args: RunArgs) {
         let client = pending
             .take()
             .unwrap_or_else(|| build_client(&cfg, args.mock));
-        let result = run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+        let result = run_with_client_observed(&cfg, client, Rc::clone(&observer))
+            .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
         if result.winner_take_all {
             wta_count += 1;
         }
@@ -444,6 +489,7 @@ fn cmd_run(args: RunArgs) {
         );
     }
 
+    close_shared(&stage);
     let dir = rv.finish().expect("runvault: run の完了に失敗");
     println!("日次集計   → {}/metrics.csv", dir.display());
     println!("店舗パネル → {}/events.jsonl", dir.display());
@@ -522,6 +568,17 @@ fn cmd_sweep(args: SweepArgs) {
     let mut console: Vec<(usize, bool, f64)> = Vec::with_capacity(n_total);
     let mut done = 0usize;
 
+    // 単位は `run` と同じ «LLM 呼び出し 1 回»．セル 1 つ (= 1 試行) は
+    // `days * (M + N)` 回の呼び出しで，既定の格子の一番小さいセルでも
+    // 15 * (2 + 20) = 330 回 ≒ 2 分半あり，格子全体では 47,700 回 ≒ 6 時間半に
+    // なる (実測した 1 回 0.48 秒から)．セルを数える counter では «いま何をして
+    // いるか» が 2 分半見えない．
+    //
+    // 分母は持たない．試行の本数 (60) は正確だが，1 試行の長さは店舗の撤退で
+    // 早く終わりうるので呼び出しの総数は事前に数えられない．なお `sweep` には
+    // `--mock` が無く，既定でライブの LLM を必要とする．
+    let (stage, observer) = share_stage(parent.unbounded_stage("decisions"));
+
     for &n_firms in &n_firms_values {
         for &n_customers in &n_customers_values {
             for run_idx in 0..args.runs {
@@ -568,8 +625,8 @@ fn cmd_sweep(args: SweepArgs) {
                 )
                 .expect("runvault: 子 run の開始に失敗");
 
-                let result =
-                    run_with_client(&cfg, client).unwrap_or_else(|e| panic!("実行に失敗: {}", e));
+                let result = run_with_client_observed(&cfg, client, Rc::clone(&observer))
+                    .unwrap_or_else(|e| panic!("実行に失敗: {}", e));
                 record::log_simulation(&mut child, &result);
                 child.finish().expect("runvault: 子 run の完了に失敗");
 
@@ -595,6 +652,7 @@ fn cmd_sweep(args: SweepArgs) {
         }
     }
 
+    close_shared(&stage);
     let dir = parent
         .finish()
         .expect("runvault: sweep 親 run の完了に失敗");
@@ -670,6 +728,7 @@ fn run_repro_cell(
     output_dir: &str,
     sweep_id: &str,
     parent_run_uid: &str,
+    observer: CallObserver,
 ) -> ReproCell {
     let mut wta_count = 0usize;
     let mut quality_count = 0usize;
@@ -716,7 +775,7 @@ fn run_repro_cell(
         )
         .expect("runvault: 子 run の開始に失敗");
 
-        let result = run_with_client(&cfg, client)
+        let result = run_with_client_observed(&cfg, client, Rc::clone(&observer))
             .unwrap_or_else(|e| panic!("実行に失敗 ({}): {e}", customer_mode.label()));
         record::log_simulation(&mut child, &result);
         child.finish().expect("runvault: 子 run の完了に失敗");
@@ -884,6 +943,17 @@ fn cmd_reproduce(args: ReproduceArgs) {
     println!("-------------------------------------------------");
 
     // --- 個人客 / グループ客の発生頻度を集計 (試行ごとに子 run) ---
+    //
+    // 単位は `run` / `sweep` と同じ «LLM 呼び出し 1 回»．論文標準では 1 試行が
+    // 15 日 × (2 + 50) = 780 回 = 6 分 18 秒 (実測) あるので，試行を数える counter
+    // では 6 分動かない．15 試行の全体はおよそ 1 時間半になる．分母は持たない —
+    // 店舗の撤退で試行が早く終わりうる以上，呼び出しの総数は事前に数えられない．
+    //
+    // 顧客構成ごとに別の stage にする．勝者総取りが起きるかどうか (= 資金が尽きて
+    // 早く止まるかどうか) は顧客構成で決まる (論文 個人 66.7% / グループ 16.7%)
+    // ので，1 試行あたりの呼び出し回数はここで変わる．重みを与えるのではなく分ける
+    // — 重みは走らせる前には測れず，速い側が遅い側の見積りを引っぱるだけである．
+    let (ind_stage, ind_observer) = share_stage(parent.unbounded_stage("individual"));
     let individual = run_repro_cell(
         CustomerMode::Individual,
         &base,
@@ -893,7 +963,11 @@ fn cmd_reproduce(args: ReproduceArgs) {
         &args.output_dir,
         &sweep_id,
         &parent_run_uid,
+        ind_observer,
     );
+    close_shared(&ind_stage);
+
+    let (grp_stage, grp_observer) = share_stage(parent.unbounded_stage("group"));
     let group = run_repro_cell(
         CustomerMode::Group,
         &base,
@@ -903,7 +977,9 @@ fn cmd_reproduce(args: ReproduceArgs) {
         &args.output_dir,
         &sweep_id,
         &parent_run_uid,
+        grp_observer,
     );
+    close_shared(&grp_stage);
 
     // --- 全ラン (個人 + グループ) の集約 ---
     let total_runs = (individual.runs + group.runs).max(1);

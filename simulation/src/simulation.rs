@@ -26,8 +26,9 @@ use socsim_llm::{LlmClient, MetadataCollector};
 use crate::config::{Config, CustomerMode};
 use crate::llm::CompeteClient;
 use crate::mechanisms::{
-    CompetitionMatthewMechanism, CustomerChoiceMechanism, MarketResetMechanism, PatronageMechanism,
-    ReflectionMechanism, RevenueRewardMechanism, SharedClient, SharedMetadata, SharedMetrics,
+    no_observer, CallObserver, CompetitionMatthewMechanism, CustomerChoiceMechanism,
+    MarketResetMechanism, PatronageMechanism, ReflectionMechanism, RevenueRewardMechanism,
+    SharedClient, SharedMetadata, SharedMetrics,
 };
 use crate::metrics::{market_share_max, winner_take_all, DailyMetric};
 use crate::world::{Customer, Dish, Firm, Market, MarketWorld, CUSTOMER_ID_BASE};
@@ -158,6 +159,18 @@ pub fn init_world(cfg: &Config, rng: &mut SimRng) -> MarketWorld {
 /// ラップした `mock::ScriptedClient` を渡す．LLM クライアントはメカニズムと
 /// `Rc<RefCell<…>>` で共有し，実行後にキャッシュ保存・メタデータ集計に使う．
 pub fn run_with_client(cfg: &Config, client: CompeteClient) -> Result<SimulationResult, String> {
+    run_with_client_observed(cfg, client, no_observer())
+}
+
+/// 同じものを，LLM を 1 回呼ぶたびに `observer` を叩きながら実行する．
+///
+/// 進捗を報告する呼び出し側だけがこちらを使う．`run_with_client` は何も数えない
+/// 観測子を渡す薄い包みなので，既存の呼び出し側もテストも振る舞いが変わらない．
+pub fn run_with_client_observed(
+    cfg: &Config,
+    client: CompeteClient,
+    observer: CallObserver,
+) -> Result<SimulationResult, String> {
     let root = cfg.seed.unwrap_or_else(rand::random);
 
     // 初期世界 (root から派生した init RNG; 決定論的 socsim コア層)．
@@ -181,12 +194,14 @@ pub fn run_with_client(cfg: &Config, client: CompeteClient) -> Result<Simulation
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(CustomerChoiceMechanism::new(
             Rc::clone(&shared_client),
             Rc::clone(&shared_meta),
             cfg.llm.clone(),
             cfg.customer_mode,
+            Rc::clone(&observer),
         )))
         .add_mechanism(Box::new(PatronageMechanism))
         .add_mechanism(Box::new(RevenueRewardMechanism::new(Rc::clone(

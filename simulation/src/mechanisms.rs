@@ -46,6 +46,23 @@ pub type SharedMetadata = Rc<RefCell<MetadataCollector>>;
 /// 共有 日次指標バッファ (ドライバが run 後に CSV へ書き出す)．
 pub type SharedMetrics = Rc<RefCell<Vec<DailyMetric>>>;
 
+/// LLM を 1 回呼ぶたびに叩かれる観測子．
+///
+/// 時間が乗っているのは «1 日» ではなく «モデル呼び出し 1 回» である．論文標準の
+/// M=2 / N=50 で 1 日は 52 回の呼び出しになり，ローカルの Ollama (llama3.2) を
+/// 相手にした `run` の既定設定 (780 回) は 6 分 18 秒 = 1 回 0.48 秒だった —
+/// 1 日はおよそ 25 秒で，日を数える counter はその間まったく動かない．
+/// `--n-customers` を上げれば 1 日は分の単位になる．
+///
+/// 借りずに共有するのは，メカニズムが `Box<dyn Mechanism<_>>` としてエンジンへ
+/// 入る = `'static` であり，呼び出し側の `Stage` を借用できないからである．
+pub type CallObserver = Rc<RefCell<dyn FnMut()>>;
+
+/// 何も数えない観測子 (進捗を報告しない呼び出し側用)．
+pub fn no_observer() -> CallObserver {
+    Rc::new(RefCell::new(|| {}))
+}
+
 // scratch キー．同一ステップ内でフェーズ間に値を受け渡す (engine がステップ冒頭で
 // クリアする)．
 const SCRATCH_OFFERS: &str = "firm_offers";
@@ -117,14 +134,22 @@ pub struct CompetitionMatthewMechanism {
     client: SharedClient,
     metadata: SharedMetadata,
     settings: LlmSettings,
+    /// 店舗 1 軒の戦略立案 = LLM 呼び出し 1 回ごとに叩く．
+    observer: CallObserver,
 }
 
 impl CompetitionMatthewMechanism {
-    pub fn new(client: SharedClient, metadata: SharedMetadata, settings: LlmSettings) -> Self {
+    pub fn new(
+        client: SharedClient,
+        metadata: SharedMetadata,
+        settings: LlmSettings,
+        observer: CallObserver,
+    ) -> Self {
         CompetitionMatthewMechanism {
             client,
             metadata,
             settings,
+            observer,
         }
     }
 }
@@ -191,6 +216,7 @@ impl Mechanism<MarketWorld> for CompetitionMatthewMechanism {
                 self.metadata.borrow_mut().record(resp.metadata.clone());
                 resp.text
             };
+            (self.observer.borrow_mut())();
             let strat = parse_firm_strategy(&text, firm.chef_salary);
 
             // 戦略を適用する: 価格倍率を全料理に乗じ，シェフ給与を更新し
@@ -275,6 +301,8 @@ pub struct CustomerChoiceMechanism {
     metadata: SharedMetadata,
     settings: LlmSettings,
     customer_mode: CustomerMode,
+    /// 顧客 1 人の来店選択 = LLM 呼び出し 1 回ごとに叩く．
+    observer: CallObserver,
 }
 
 impl CustomerChoiceMechanism {
@@ -283,12 +311,14 @@ impl CustomerChoiceMechanism {
         metadata: SharedMetadata,
         settings: LlmSettings,
         customer_mode: CustomerMode,
+        observer: CallObserver,
     ) -> Self {
         CustomerChoiceMechanism {
             client,
             metadata,
             settings,
             customer_mode,
+            observer,
         }
     }
 
@@ -316,6 +346,7 @@ impl CustomerChoiceMechanism {
             ctx_meta.borrow_mut().record(resp.metadata.clone());
             resp.text
         };
+        (self.observer.borrow_mut())();
         let idx = parse_customer_choice(&text, offers.len()).unwrap_or_else(|| {
             // フォールバック: 平均スコア最大の店 (タイは先頭)．
             offers
