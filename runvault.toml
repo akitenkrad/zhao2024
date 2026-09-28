@@ -1,3 +1,164 @@
-# Metric descriptions are not written yet (MYTASK-3382). Until they are,
-# runvault records undeclared metrics instead of refusing them.
-require_docs = false
+# 指標が何を測っているか (runvault の宣言．rs-runvault docs/metrics.ja.md)．
+#
+# 名前は `simulation/src/record.rs` と `simulation/src/main.rs` が記録するものと一致していなければならない．
+#
+# `direction` は «値が大きいほど良いか»．模型の状態や到達量は成績ではないので
+# `none` とし，再現精度やキャッシュ効率のように評価方向が定まる量だけ `up` /
+# `down` とする．
+
+[metrics."revenue_gini"]
+meaning   = "店舗の累積収益に対する Gini 係数"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."market_share_max"]
+meaning   = "その日に最も多く来客した店舗の市場シェア"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."menu_similarity"]
+meaning   = "全店舗対のメニュー集合に対する Jaccard 類似度の平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."n_alive_firms"]
+meaning   = "その日に営業を続けている店舗数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."final_day"]
+meaning   = "シミュレーションが完了した日数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."winner_take_all"]
+meaning   = "Day 6 以降に最大市場シェアが常に 0.8 を超えたなら 1，それ以外は 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."quality_improved"]
+meaning   = "少なくとも 1 店舗で料理品質が初日から改善したなら 1，それ以外は 0"
+unit      = "boolean"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."llm_calls"]
+meaning   = "この run が行った LLM の呼び出し回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hits"]
+meaning   = "そのうちキャッシュで済んだ回数"
+unit      = "count"
+direction = "none"
+scope     = ["run"]
+
+[metrics."llm_cache_hit_rate"]
+meaning   = "LLM 呼び出しのうちキャッシュで済んだ割合"
+unit      = "ratio"
+direction = "up"
+range     = [0.0, 1.0]
+scope     = ["run"]
+
+[metrics."wta_freq_individual"]
+meaning   = "個人客条件で勝者総取りが発生した試行の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."wta_freq_group"]
+meaning   = "グループ客条件で勝者総取りが発生した試行の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."quality_freq_individual"]
+meaning   = "個人客条件で品質改善が発生した試行の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."quality_freq_group"]
+meaning   = "グループ客条件で品質改善が発生した試行の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."quality_freq_all"]
+meaning   = "両顧客条件を合わせて品質改善が発生した試行の割合"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."menu_similarity_individual"]
+meaning   = "個人客条件における最終メニュー類似度の試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."menu_similarity_group"]
+meaning   = "グループ客条件における最終メニュー類似度の試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."menu_similarity_all"]
+meaning   = "両顧客条件を合わせた最終メニュー類似度の試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."final_gini_individual"]
+meaning   = "個人客条件における最終収益 Gini の試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."final_gini_group"]
+meaning   = "グループ客条件における最終収益 Gini の試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."final_share_max_individual"]
+meaning   = "個人客条件における最終最大市場シェアの試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."final_share_max_group"]
+meaning   = "グループ客条件における最終最大市場シェアの試行平均"
+unit      = "ratio"
+direction = "none"
+range     = [0.0, 1.0]
+scope     = ["sweep"]
+
+[metrics."wta_freq_gap_individual_minus_group"]
+meaning   = "個人客条件の勝者総取り発生率からグループ客条件の値を引いた差"
+unit      = "ratio"
+direction = "none"
+range     = [-1.0, 1.0]
+scope     = ["sweep"]
