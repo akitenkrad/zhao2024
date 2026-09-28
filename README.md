@@ -74,6 +74,11 @@ uv run competeai-tools reproduce --run --mock
 #   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
 ```
 
+
+## Scratch runs
+
+Use `--scratch` for development, debugging, and smoke-test runs. Scratch runs are created under `results/_scratch/`, are never synced to the vault, and the latest scratch run can be located with `runvault path --scratch`.
+
 ## What this project does
 
 The project implements the full CompeteAI virtual-town model and its analyses end to end:

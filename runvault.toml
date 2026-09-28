@@ -1,0 +1,3 @@
+# Metric descriptions are not written yet (MYTASK-3382). Until they are,
+# runvault records undeclared metrics instead of refusing them.
+require_docs = false

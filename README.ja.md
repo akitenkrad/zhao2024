@@ -74,6 +74,11 @@ uv run competeai-tools reproduce --run --mock
 #   cargo run --release -- reproduce --seed 42 && uv run competeai-tools reproduce
 ```
 
+
+## Scratch run
+
+開発中・デバッグ中・動作確認の実行には `--scratch` を付ける．run は `results/_scratch/` に作られ，同期されない．最新の scratch run は `runvault path --scratch` で取得できる．
+
 ## できること
 
 本プロジェクトは CompeteAI 仮想タウンモデルとその分析を端から端まで実装する:
