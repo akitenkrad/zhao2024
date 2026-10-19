@@ -995,7 +995,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "socsim-core"
 version = "0.1.0"
-source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#5abfbc8b9f873207ad8858331ee845e6e0d8b385"
+source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#4674d64ce0b7b41f0e5689c23f4f1bfaad2cfcab"
 dependencies = [
  "serde",
  "serde_json",
@@ -1006,7 +1006,7 @@ dependencies = [
 [[package]]
 name = "socsim-engine"
 version = "0.1.0"
-source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#5abfbc8b9f873207ad8858331ee845e6e0d8b385"
+source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#4674d64ce0b7b41f0e5689c23f4f1bfaad2cfcab"
 dependencies = [
  "rand 0.8.6",
  "serde",
@@ -1017,7 +1017,7 @@ dependencies = [
 [[package]]
 name = "socsim-llm"
 version = "0.1.0"
-source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#5abfbc8b9f873207ad8858331ee845e6e0d8b385"
+source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#4674d64ce0b7b41f0e5689c23f4f1bfaad2cfcab"
 dependencies = [
  "serde",
  "serde_json",
@@ -1028,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "socsim-rng"
 version = "0.1.0"
-source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#5abfbc8b9f873207ad8858331ee845e6e0d8b385"
+source = "git+https://github.com/akitenkrad/rs-social-simulation-tools?branch=main#4674d64ce0b7b41f0e5689c23f4f1bfaad2cfcab"
 dependencies = [
  "rand 0.8.6",
  "rand_chacha",

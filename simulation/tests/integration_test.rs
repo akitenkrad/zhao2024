@@ -221,6 +221,7 @@ fn repro_config(mode: CustomerMode) -> Config {
         group_size: 4,
         days: 15,
         llm: LlmSettings {
+            think: None,
             temperature: 0.0,
             seed: 0,
             cache_path: None,
